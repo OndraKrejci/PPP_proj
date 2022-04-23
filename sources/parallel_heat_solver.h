@@ -1,10 +1,10 @@
 /**
  * @file    parallel_heat_solver.h
- * @author  xlogin00 <xlogin00@stud.fit.vutbr.cz>
+ * @author  xkrejc69 <xkrejc69@stud.fit.vutbr.cz>
  *
  * @brief   Course: PPP 2021/2022 - Project 1
  *
- * @date    2022-MM-DD
+ * @date    2022-04-DD
  */
 
 #ifndef PARALLEL_HEAT_SOLVER_H
@@ -61,6 +61,25 @@ public:
 protected:
     int m_rank;     ///< Process rank in global (MPI_COMM_WORLD) communicator.
     int m_size;     ///< Total number of processes in MPI_COMM_WORLD.
+
+    AutoHandle<hid_t> m_fileHandle;
+
+    size_t edgeSize; // simulated area: edgeSize * edgeSize
+
+    // amounts of tiles in each dimension
+    int tilesX;
+    int tilesY;
+
+    // root data
+    std::vector<float, AlignedAllocator<float>> rootTempArray;
+    std::vector<float, AlignedAllocator<float>> rootDomainParams;
+    std::vector<int, AlignedAllocator<int>> rootDomainMap;
+
+    // local tile data
+    std::vector<float, AlignedAllocator<float>> lTempArray1;
+    std::vector<float, AlignedAllocator<float>> lTempArray2;
+    std::vector<float, AlignedAllocator<float>> lDomainParams;
+    std::vector<int, AlignedAllocator<int>> lDomainMap;
 };
 
-#endif // PARALLEL_HEAT_SOLVER_H
+#endif PARALLEL_HEAT_SOLVER_H
