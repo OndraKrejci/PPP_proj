@@ -2,16 +2,14 @@
  * @file    parallel_heat_solver.cpp
  * @author  xkrejc69 <xkrejc69@stud.fit.vutbr.cz>
  *
- * @brief   Course: PPP 2020/2021 - Project 1
+ * @brief   Course: PPP 2021/2022 - Project 1
  *
- * @date    2021-04-DD
+ * @date    2021-05-01
  */
 
 #include "parallel_heat_solver.h"
 
 #include <hdf5.h>
-
-using namespace std;
 
 //============================================================================//
 //                            *** BEGIN: NOTE ***
@@ -80,33 +78,206 @@ ParallelHeatSolver::ParallelHeatSolver(SimulationProperties &simulationProps, Ma
     m_simulationProperties.GetDecompGrid(tilesX, tilesY);
 
     // tile sizes with and without borders
-    size_t tileCols = edgeSize / tilesX;
-    size_t tileRows = edgeSize / tilesY;
-    size_t extendedTileCols = tileCols + 4;
-    size_t extendedTileRows = tileRows + 4;
-    size_t extendedTileSize = extendedTileCols * extendedTileRows;
+    tileCols = edgeSize / tilesX;
+    tileRows = edgeSize / tilesY;
+    tileSize = tileCols * tileRows;
+    extendedTileCols = tileCols + DOUBLE_OFFSET;
+    extendedTileRows = tileRows + DOUBLE_OFFSET;
+    extendedTileSize = extendedTileCols * extendedTileRows;
+    
+    matrixSize = edgeSize * edgeSize;
 
     //// 3) Helper arrays for each process
-
     lTempArray1.resize(extendedTileSize);
     lTempArray2.resize(extendedTileSize);
     lDomainParams.resize(extendedTileSize);
     lDomainMap.resize(extendedTileSize);
 
-    // additional border removes the need to handle the borders as a special case
-    if(m_rank == MPI_ROOT_RANK){
-        const size_t extendedEdge = edgeSize + 4;
-        const size_t extendedArrayLen = extendedEdge * extendedEdge;
-        rootTempArray.resize(extendedArrayLen, 0.0);
-        rootDomainParams.resize(extendedArrayLen, 0.0);
-        rootDomainMap.resize(extendedArrayLen, 0);
+    // position info
+    atLeftBorder = (m_rank % tilesX) == 0;
+    atRightBorder = (m_rank % tilesX) == (tilesX - 1);
+    atTopBorder = m_rank < tilesX; // is in first row
+    atBottomBorder = m_rank >= (m_size - tilesX); // one of the last [number of tiles in X] tiles
+
+    // indexes for tile without borders
+    tileStartX = OFFSET;
+    tileEndX = extendedTileCols - OFFSET;
+    tileStartY = OFFSET;
+    tileEndY = extendedTileRows - OFFSET;
+
+    // initialize types
+	constexpr int ndims = 2;
+	const int size[ndims] = {extendedTileRows, extendedTileCols};
+	const int subsize[ndims] = {tileRows, tileCols};
+	int start[ndims] = {OFFSET, OFFSET};
+
+    // worker tiles
+	MPI_Type_create_subarray(ndims, size, subsize, start, MPI_ORDER_C, MPI_FLOAT, &TYPE_WORKER_TILE_FLOAT);
+	MPI_Type_commit(&TYPE_WORKER_TILE_FLOAT);
+	MPI_Type_create_subarray(ndims, size, subsize, start, MPI_ORDER_C, MPI_INT, &TYPE_WORKER_TILE_INT);
+	MPI_Type_commit(&TYPE_WORKER_TILE_INT);
+
+    leftBorderSendIdx = OFFSET * extendedTileCols + OFFSET;
+	rightBorderRecvIdx = (OFFSET + 1) * extendedTileCols - OFFSET;
+	rightBorderSendIdx = (OFFSET + 1) * extendedTileCols - DOUBLE_OFFSET;
+	leftBorderRecvIdx = OFFSET * extendedTileCols;
+	topBorderSendIdx = OFFSET * extendedTileCols + OFFSET;
+	bottomBorderRecvIdx = (OFFSET + tileRows) * extendedTileCols + OFFSET;
+    bottomBorderSendIdx = tileRows * extendedTileCols + OFFSET;
+	topBorderRecvIdx = OFFSET;
+
+    // worker borders
+	MPI_Type_vector(tileRows, OFFSET, extendedTileCols, MPI_FLOAT, &TYPE_TILE_BORDER_LR_FLOAT);
+	MPI_Type_commit(&TYPE_TILE_BORDER_LR_FLOAT);
+	MPI_Type_vector(OFFSET, tileCols, extendedTileCols, MPI_FLOAT, &TYPE_TILE_BORDER_TB_FLOAT);
+	MPI_Type_commit(&TYPE_TILE_BORDER_TB_FLOAT);
+	MPI_Type_vector(tileRows, OFFSET, extendedTileCols, MPI_INT, &TYPE_TILE_BORDER_LR_INT);
+	MPI_Type_commit(&TYPE_TILE_BORDER_LR_INT);
+	MPI_Type_vector(OFFSET, tileCols, extendedTileCols, MPI_INT, &TYPE_TILE_BORDER_TB_INT);
+	MPI_Type_commit(&TYPE_TILE_BORDER_TB_INT);
+
+    // root tiles
+	if(m_rank == MPI_ROOT_RANK){
+		const int rsize[ndims] = {edgeSize, edgeSize};
+		const int rsubsize[ndims] = {tileRows, tileCols};
+		const int rstart[ndims] = {0, 0};
+
+		MPI_Type_create_subarray(ndims, rsize, rsubsize, rstart, MPI_ORDER_C, MPI_FLOAT, &TYPE_ROOT_TILE_FLOAT_INITIAL);
+		MPI_Type_commit(&TYPE_ROOT_TILE_FLOAT_INITIAL);
+		MPI_Type_create_resized(TYPE_ROOT_TILE_FLOAT_INITIAL, 0, sizeof(float), &TYPE_ROOT_TILE_FLOAT);
+		MPI_Type_commit(&TYPE_ROOT_TILE_FLOAT);
+
+		MPI_Type_create_subarray(ndims, rsize, rsubsize, rstart, MPI_ORDER_C, MPI_INT, &TYPE_ROOT_TILE_INT_INITIAL);
+		MPI_Type_commit(&TYPE_ROOT_TILE_INT_INITIAL);
+		MPI_Type_create_resized(TYPE_ROOT_TILE_INT_INITIAL, 0, sizeof(int), &TYPE_ROOT_TILE_INT);
+		MPI_Type_commit(&TYPE_ROOT_TILE_INT);
+	}
+
+    // scatter tiles
+    int counts[tilesX * tilesY];
+    std::fill_n(counts, tilesX * tilesY, 1);
+
+    int displs[tilesX * tilesY];
+    int k = 0;
+    for(int i = 0; i < tilesY; i++){
+        for(int j = 0; j < tilesX; j++){
+            displs[k++] = (tileSize * tilesX * i) + (tileCols * j);
+        }
     }
+
+    MPI_Scatterv(m_materialProperties.GetInitTemp().data(), counts, displs, TYPE_ROOT_TILE_FLOAT, lTempArray1.data(), 1, TYPE_WORKER_TILE_FLOAT, MPI_ROOT_RANK, MPI_COMM_WORLD);
+    MPI_Scatterv(m_materialProperties.GetInitTemp().data(), counts, displs, TYPE_ROOT_TILE_FLOAT, lTempArray2.data(), 1, TYPE_WORKER_TILE_FLOAT, MPI_ROOT_RANK, MPI_COMM_WORLD);
+    MPI_Scatterv(m_materialProperties.GetDomainParams().data(), counts, displs, TYPE_ROOT_TILE_FLOAT, lDomainParams.data(), 1, TYPE_WORKER_TILE_FLOAT, MPI_ROOT_RANK, MPI_COMM_WORLD);
+    MPI_Scatterv(m_materialProperties.GetDomainMap().data(), counts, displs, TYPE_ROOT_TILE_INT, lDomainMap.data(), 1, TYPE_WORKER_TILE_INT, MPI_ROOT_RANK, MPI_COMM_WORLD);
+
+    // neighbour indexes
+    neighbourLeft = m_rank - 1;
+    neighbourRight = m_rank + 1;
+    neighbourTop = m_rank - tilesX;
+    neighbourBottom = m_rank + tilesX;
+
+    initialBorderExchange();
+}
+
+void ParallelHeatSolver::initialBorderExchange(){
+    MPI_Request reqs[8 * 3];
+    unsigned i = 0;
+
+    unsigned idx;
+    int neighbour;
+
+    if(!atLeftBorder){
+        neighbour = neighbourLeft;
+        idx = leftBorderSendIdx;
+
+        MPI_Isend(&lTempArray1[idx], 1, TYPE_TILE_BORDER_LR_FLOAT, neighbour, TAG_INIT_BORDER_TEMP, MPI_COMM_WORLD, &reqs[i++]);
+        MPI_Isend(&lDomainParams[idx], 1, TYPE_TILE_BORDER_LR_FLOAT, neighbour, TAG_INIT_BORDER_DOMAIN_PARAMS, MPI_COMM_WORLD, &reqs[i++]);
+        MPI_Isend(&lDomainMap[idx], 1, TYPE_TILE_BORDER_LR_INT, neighbour, TAG_INIT_BORDER_DOMAIN_MAP, MPI_COMM_WORLD, &reqs[i++]);
+
+        idx = leftBorderRecvIdx;
+
+        MPI_Irecv(&lTempArray1[idx], 1, TYPE_TILE_BORDER_LR_FLOAT, neighbour, TAG_INIT_BORDER_TEMP, MPI_COMM_WORLD, &reqs[i++]);
+        MPI_Irecv(&lDomainParams[idx], 1, TYPE_TILE_BORDER_LR_FLOAT, neighbour, TAG_INIT_BORDER_DOMAIN_PARAMS, MPI_COMM_WORLD, &reqs[i++]);
+        MPI_Irecv(&lDomainMap[idx], 1, TYPE_TILE_BORDER_LR_INT, neighbour, TAG_INIT_BORDER_DOMAIN_MAP, MPI_COMM_WORLD, &reqs[i++]);
+    }
+    if(!atRightBorder){
+        neighbour = neighbourRight;
+        idx = rightBorderSendIdx;
+
+        MPI_Isend(&lTempArray1[idx], 1, TYPE_TILE_BORDER_LR_FLOAT, neighbour, TAG_INIT_BORDER_TEMP, MPI_COMM_WORLD, &reqs[i++]);
+        MPI_Isend(&lDomainParams[idx], 1, TYPE_TILE_BORDER_LR_FLOAT, neighbour, TAG_INIT_BORDER_DOMAIN_PARAMS, MPI_COMM_WORLD, &reqs[i++]);
+        MPI_Isend(&lDomainMap[idx], 1, TYPE_TILE_BORDER_LR_INT, neighbour, TAG_INIT_BORDER_DOMAIN_MAP, MPI_COMM_WORLD, &reqs[i++]);
+
+        idx = rightBorderRecvIdx;
+
+        MPI_Irecv(&lTempArray1[idx], 1, TYPE_TILE_BORDER_LR_FLOAT, neighbour, TAG_INIT_BORDER_TEMP, MPI_COMM_WORLD, &reqs[i++]);
+        MPI_Irecv(&lDomainParams[idx], 1, TYPE_TILE_BORDER_LR_FLOAT, neighbour, TAG_INIT_BORDER_DOMAIN_PARAMS, MPI_COMM_WORLD, &reqs[i++]);
+        MPI_Irecv(&lDomainMap[idx], 1, TYPE_TILE_BORDER_LR_INT, neighbour, TAG_INIT_BORDER_DOMAIN_MAP, MPI_COMM_WORLD, &reqs[i++]);
+    }
+    if(!atTopBorder){
+        neighbour = neighbourTop;
+        idx = topBorderSendIdx;
+
+        MPI_Isend(&lTempArray1[idx], 1, TYPE_TILE_BORDER_TB_FLOAT, neighbour, TAG_INIT_BORDER_TEMP, MPI_COMM_WORLD, &reqs[i++]);
+        MPI_Isend(&lDomainParams[idx], 1, TYPE_TILE_BORDER_TB_FLOAT, neighbour, TAG_INIT_BORDER_DOMAIN_PARAMS, MPI_COMM_WORLD, &reqs[i++]);
+        MPI_Isend(&lDomainMap[idx], 1, TYPE_TILE_BORDER_TB_INT, neighbour, TAG_INIT_BORDER_DOMAIN_MAP, MPI_COMM_WORLD, &reqs[i++]);
+
+        idx = topBorderRecvIdx;
+
+        MPI_Irecv(&lTempArray1[idx], 1, TYPE_TILE_BORDER_TB_FLOAT, neighbour, TAG_INIT_BORDER_TEMP, MPI_COMM_WORLD, &reqs[i++]);
+        MPI_Irecv(&lDomainParams[idx], 1, TYPE_TILE_BORDER_TB_FLOAT, neighbour, TAG_INIT_BORDER_DOMAIN_PARAMS, MPI_COMM_WORLD, &reqs[i++]);
+        MPI_Irecv(&lDomainMap[idx], 1, TYPE_TILE_BORDER_TB_INT, neighbour, TAG_INIT_BORDER_DOMAIN_MAP, MPI_COMM_WORLD, &reqs[i++]);
+    }
+    if(!atBottomBorder){
+        neighbour = neighbourBottom;
+        idx = bottomBorderSendIdx;
+
+        MPI_Isend(&lTempArray1[idx], 1, TYPE_TILE_BORDER_TB_FLOAT, neighbour, TAG_INIT_BORDER_TEMP, MPI_COMM_WORLD, &reqs[i++]);
+        MPI_Isend(&lDomainParams[idx], 1, TYPE_TILE_BORDER_TB_FLOAT, neighbour, TAG_INIT_BORDER_DOMAIN_PARAMS, MPI_COMM_WORLD, &reqs[i++]);
+        MPI_Isend(&lDomainMap[idx], 1, TYPE_TILE_BORDER_TB_INT, neighbour, TAG_INIT_BORDER_DOMAIN_MAP, MPI_COMM_WORLD, &reqs[i++]);
+
+        idx = bottomBorderRecvIdx;
+
+        MPI_Irecv(&lTempArray1[idx], 1, TYPE_TILE_BORDER_TB_FLOAT, neighbour, TAG_INIT_BORDER_TEMP, MPI_COMM_WORLD, &reqs[i++]);
+        MPI_Irecv(&lDomainParams[idx], 1, TYPE_TILE_BORDER_TB_FLOAT, neighbour, TAG_INIT_BORDER_DOMAIN_PARAMS, MPI_COMM_WORLD, &reqs[i++]);
+        MPI_Irecv(&lDomainMap[idx], 1, TYPE_TILE_BORDER_TB_INT, neighbour, TAG_INIT_BORDER_DOMAIN_MAP, MPI_COMM_WORLD, &reqs[i++]);
+    }
+
+    MPI_Waitall(i, reqs, MPI_STATUSES_IGNORE);
 }
 
 ParallelHeatSolver::~ParallelHeatSolver(){
 }
 
+void printMat(float* mat, int rows, int cols){ // TODO rm
+	for(int i = 0; i < rows; i ++){
+		for(int j = 0; j < cols; j ++){
+			const int idx = (i * cols) + j;
+			std::cout << mat[idx] << "\t";
+		}
+		std::cout << std::endl;
+	}
+}
+
 void ParallelHeatSolver::RunSolver(std::vector<float, AlignedAllocator<float> > &outResult){
+    // TODO rm
+    if(m_rank == 0){
+        std::cout << "x: " << tilesX << "\ty: " << tilesY << std::endl;
+
+        std::cout << "RANK 0:" << std::endl;
+        printMat(lTempArray1.data(), extendedTileRows, extendedTileCols);
+    }
+
+    MPI_Barrier(MPI_COMM_WORLD);
+
+    if(m_rank == 1){
+        std::cout << "RANK 1:" << std::endl;
+        printMat(lTempArray1.data(), extendedTileRows, extendedTileCols);
+    }
+
+    std::cout << std::flush;
+    MPI_Barrier(MPI_COMM_WORLD);
+
     // UpdateTile(...) method can be used to evaluate heat equation over 2D tile
     //                 in parallel (using OpenMP).
     // NOTE: This method might be inefficient when used for small tiles such as 

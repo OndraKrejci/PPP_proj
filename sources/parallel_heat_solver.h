@@ -4,7 +4,7 @@
  *
  * @brief   Course: PPP 2021/2022 - Project 1
  *
- * @date    2022-04-DD
+ * @date    2022-05-01
  */
 
 #ifndef PARALLEL_HEAT_SOLVER_H
@@ -62,24 +62,76 @@ protected:
     int m_rank;     ///< Process rank in global (MPI_COMM_WORLD) communicator.
     int m_size;     ///< Total number of processes in MPI_COMM_WORLD.
 
+    const int TAG_COMM = 1;
+    const int TAG_INIT_BORDER_TEMP = 2;
+    const int TAG_INIT_BORDER_DOMAIN_PARAMS = 3;
+    const int TAG_INIT_BORDER_DOMAIN_MAP = 5;
+
     AutoHandle<hid_t> m_fileHandle;
 
-    size_t edgeSize; // simulated area: edgeSize * edgeSize
+    size_t edgeSize;
+    size_t matrixSize; // simulated area: edgeSize * edgeSize
 
     // amounts of tiles in each dimension
     int tilesX;
     int tilesY;
 
-    // root data
-    std::vector<float, AlignedAllocator<float>> rootTempArray;
-    std::vector<float, AlignedAllocator<float>> rootDomainParams;
-    std::vector<int, AlignedAllocator<int>> rootDomainMap;
+    const size_t OFFSET = 2;
+    const size_t DOUBLE_OFFSET = OFFSET * 2;
 
     // local tile data
     std::vector<float, AlignedAllocator<float>> lTempArray1;
     std::vector<float, AlignedAllocator<float>> lTempArray2;
     std::vector<float, AlignedAllocator<float>> lDomainParams;
     std::vector<int, AlignedAllocator<int>> lDomainMap;
+
+    // tile sizes
+    size_t tileCols;
+    size_t tileRows;
+    size_t tileSize;
+    size_t extendedTileCols;
+    size_t extendedTileRows;
+    size_t extendedTileSize;
+
+    // position info
+    bool atLeftBorder;
+    bool atRightBorder;
+    bool atTopBorder;
+    bool atBottomBorder;
+    size_t tileStartX;
+    size_t tileEndX;
+    size_t tileStartY;
+    size_t tileEndY;
+
+    // types
+    MPI_Datatype TYPE_WORKER_TILE_FLOAT;
+    MPI_Datatype TYPE_WORKER_TILE_INT;
+    MPI_Datatype TYPE_TILE_BORDER_LR_FLOAT;
+    MPI_Datatype TYPE_TILE_BORDER_TB_FLOAT;
+    MPI_Datatype TYPE_TILE_BORDER_LR_INT;
+    MPI_Datatype TYPE_TILE_BORDER_TB_INT;
+    MPI_Datatype TYPE_ROOT_TILE_FLOAT_INITIAL;
+    MPI_Datatype TYPE_ROOT_TILE_INT_INITIAL;
+    MPI_Datatype TYPE_ROOT_TILE_FLOAT;
+    MPI_Datatype TYPE_ROOT_TILE_INT;
+
+    // tile border indexes
+    unsigned leftBorderSendIdx;
+    unsigned rightBorderRecvIdx;
+    unsigned rightBorderSendIdx;
+    unsigned leftBorderRecvIdx;
+    unsigned topBorderSendIdx;
+    unsigned bottomBorderRecvIdx;
+    unsigned bottomBorderSendIdx;
+    unsigned topBorderRecvIdx;
+
+    // neighbour indexes
+    int neighbourLeft;
+    int neighbourRight;
+    int neighbourTop;
+    int neighbourBottom;
+
+    void initialBorderExchange();
 };
 
-#endif PARALLEL_HEAT_SOLVER_H
+#endif // PARALLEL_HEAT_SOLVER_H
