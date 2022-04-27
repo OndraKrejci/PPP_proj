@@ -103,6 +103,10 @@ protected:
     size_t tileStartY;
     size_t tileEndY;
 
+    // counts and displacements for scatterv/gatherv operations
+    std::vector<int> vTileCounts; 
+    std::vector<int> vTileDisplacements; 
+
     // types
     MPI_Datatype TYPE_WORKER_TILE_FLOAT;
     MPI_Datatype TYPE_WORKER_TILE_INT;
@@ -115,7 +119,7 @@ protected:
     MPI_Datatype TYPE_ROOT_TILE_FLOAT;
     MPI_Datatype TYPE_ROOT_TILE_INT;
 
-    // tile border indexes
+    // tile border indices
     unsigned leftBorderSendIdx;
     unsigned rightBorderRecvIdx;
     unsigned rightBorderSendIdx;
@@ -125,7 +129,7 @@ protected:
     unsigned bottomBorderSendIdx;
     unsigned topBorderRecvIdx;
 
-    // neighbour indexes
+    // neighbour indices
     int neighbourLeft;
     int neighbourRight;
     int neighbourTop;

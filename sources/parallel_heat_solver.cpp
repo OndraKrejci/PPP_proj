@@ -99,11 +99,19 @@ ParallelHeatSolver::ParallelHeatSolver(SimulationProperties &simulationProps, Ma
     atTopBorder = m_rank < tilesX; // is in first row
     atBottomBorder = m_rank >= (m_size - tilesX); // one of the last [number of tiles in X] tiles
 
-    // indexes for tile without borders
+    // indices for tile without borders
     tileStartX = OFFSET;
     tileEndX = extendedTileCols - OFFSET;
     tileStartY = OFFSET;
     tileEndY = extendedTileRows - OFFSET;
+    if(atLeftBorder)
+        tileStartX += OFFSET;
+    if(atRightBorder)
+        tileEndX -= OFFSET;
+    if(atTopBorder)
+        tileStartY += OFFSET;
+    if(atBottomBorder)
+        tileEndY -= OFFSET;
 
     // initialize types
 	constexpr int ndims = 2;
@@ -154,23 +162,23 @@ ParallelHeatSolver::ParallelHeatSolver(SimulationProperties &simulationProps, Ma
 	}
 
     // scatter tiles
-    int counts[tilesX * tilesY];
-    std::fill_n(counts, tilesX * tilesY, 1);
+    vTileCounts.resize(tilesX * tilesY);
+    std::fill(vTileCounts.begin(), vTileCounts.end(), 1);
 
-    int displs[tilesX * tilesY];
+    vTileDisplacements.resize(tilesX * tilesY);
     int k = 0;
     for(int i = 0; i < tilesY; i++){
         for(int j = 0; j < tilesX; j++){
-            displs[k++] = (tileSize * tilesX * i) + (tileCols * j);
+            vTileDisplacements[k++] = (tileSize * tilesX * i) + (tileCols * j);
         }
     }
 
-    MPI_Scatterv(m_materialProperties.GetInitTemp().data(), counts, displs, TYPE_ROOT_TILE_FLOAT, lTempArray1.data(), 1, TYPE_WORKER_TILE_FLOAT, MPI_ROOT_RANK, MPI_COMM_WORLD);
-    MPI_Scatterv(m_materialProperties.GetInitTemp().data(), counts, displs, TYPE_ROOT_TILE_FLOAT, lTempArray2.data(), 1, TYPE_WORKER_TILE_FLOAT, MPI_ROOT_RANK, MPI_COMM_WORLD);
-    MPI_Scatterv(m_materialProperties.GetDomainParams().data(), counts, displs, TYPE_ROOT_TILE_FLOAT, lDomainParams.data(), 1, TYPE_WORKER_TILE_FLOAT, MPI_ROOT_RANK, MPI_COMM_WORLD);
-    MPI_Scatterv(m_materialProperties.GetDomainMap().data(), counts, displs, TYPE_ROOT_TILE_INT, lDomainMap.data(), 1, TYPE_WORKER_TILE_INT, MPI_ROOT_RANK, MPI_COMM_WORLD);
+    MPI_Scatterv(m_materialProperties.GetInitTemp().data(), vTileCounts.data(), vTileDisplacements.data(), TYPE_ROOT_TILE_FLOAT, lTempArray1.data(), 1, TYPE_WORKER_TILE_FLOAT, MPI_ROOT_RANK, MPI_COMM_WORLD);
+    MPI_Scatterv(m_materialProperties.GetInitTemp().data(), vTileCounts.data(), vTileDisplacements.data(), TYPE_ROOT_TILE_FLOAT, lTempArray2.data(), 1, TYPE_WORKER_TILE_FLOAT, MPI_ROOT_RANK, MPI_COMM_WORLD);
+    MPI_Scatterv(m_materialProperties.GetDomainParams().data(), vTileCounts.data(), vTileDisplacements.data(), TYPE_ROOT_TILE_FLOAT, lDomainParams.data(), 1, TYPE_WORKER_TILE_FLOAT, MPI_ROOT_RANK, MPI_COMM_WORLD);
+    MPI_Scatterv(m_materialProperties.GetDomainMap().data(), vTileCounts.data(), vTileDisplacements.data(), TYPE_ROOT_TILE_INT, lDomainMap.data(), 1, TYPE_WORKER_TILE_INT, MPI_ROOT_RANK, MPI_COMM_WORLD);
 
-    // neighbour indexes
+    // neighbour indices
     neighbourLeft = m_rank - 1;
     neighbourRight = m_rank + 1;
     neighbourTop = m_rank - tilesX;
@@ -259,30 +267,32 @@ void printMat(float* mat, int rows, int cols){ // TODO rm
 	}
 }
 
-void ParallelHeatSolver::RunSolver(std::vector<float, AlignedAllocator<float> > &outResult){
-    // TODO rm
-    if(m_rank == 0){
-        std::cout << "x: " << tilesX << "\ty: " << tilesY << std::endl;
+void ParallelHeatSolver::RunSolver(std::vector<float, AlignedAllocator<float>>& outResult){
+    float* workTempArrays[2] = {lTempArray1.data(), lTempArray2.data()};
 
-        std::cout << "RANK 0:" << std::endl;
-        printMat(lTempArray1.data(), extendedTileRows, extendedTileCols);
-    }
-
-    MPI_Barrier(MPI_COMM_WORLD);
-
-    if(m_rank == 1){
-        std::cout << "RANK 1:" << std::endl;
-        printMat(lTempArray1.data(), extendedTileRows, extendedTileCols);
-    }
-
-    std::cout << std::flush;
-    MPI_Barrier(MPI_COMM_WORLD);
+    const int lenX = atLeftBorder || atRightBorder ? tileCols - OFFSET : tileCols;
+    const int lenY = atTopBorder || atBottomBorder ? tileRows - OFFSET : tileRows;
 
     // UpdateTile(...) method can be used to evaluate heat equation over 2D tile
     //                 in parallel (using OpenMP).
     // NOTE: This method might be inefficient when used for small tiles such as 
     //       2xN or Nx2 (these might arise at edges of the tile)
     //       In this case ComputePoint may be called directly in loop.
+    for(size_t iter = 0; iter < m_simulationProperties.GetNumIterations(); iter++){
+        UpdateTile(
+            workTempArrays[0], workTempArrays[1], lDomainParams.data(), lDomainMap.data(),
+            tileStartX, tileStartY, lenX, lenY, extendedTileCols,
+            m_simulationProperties.GetAirFlowRate(), m_materialProperties.GetCoolerTemp()
+        );
+
+        std::swap(workTempArrays[0], workTempArrays[1]);
+    }
+
+    MPI_Gatherv(
+        workTempArrays[0], 1, TYPE_WORKER_TILE_FLOAT, outResult.data(),
+        vTileCounts.data(), vTileDisplacements.data(), TYPE_ROOT_TILE_FLOAT,
+        MPI_ROOT_RANK, MPI_COMM_WORLD
+    );
     
     // ShouldPrintProgress(N) returns true if average temperature should be reported
     // by 0th process at Nth time step (using "PrintProgressReport(...)").
