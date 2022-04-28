@@ -23,6 +23,8 @@
 
 constexpr int MPI_ROOT_RANK = 0;
 
+constexpr int ERR_INVALID_DECOMPOSITION = 1;
+
 ParallelHeatSolver::ParallelHeatSolver(SimulationProperties &simulationProps, MaterialProperties &materialProps)
     :   BaseHeatSolver (simulationProps, materialProps),
         m_fileHandle(H5I_INVALID_HID, static_cast<void (*)(hid_t )>(nullptr)),
@@ -84,6 +86,13 @@ ParallelHeatSolver::ParallelHeatSolver(SimulationProperties &simulationProps, Ma
     extendedTileCols = tileCols + DOUBLE_OFFSET;
     extendedTileRows = tileRows + DOUBLE_OFFSET;
     extendedTileSize = extendedTileCols * extendedTileRows;
+
+    if(m_rank == MPI_ROOT_RANK && (tileCols < OFFSET || tileRows < OFFSET)){
+        std::cerr
+            << "Requires a decomposition with tile of at least size [" << OFFSET << ", " << OFFSET << "],"
+            << "used [" << tileCols << ", " << tileRows << "]\n" << std::endl;
+        MPI_Abort(MPI_COMM_WORLD, ERR_INVALID_DECOMPOSITION);
+    }
     
     matrixSize = edgeSize * edgeSize;
 
@@ -270,26 +279,45 @@ void printMat(float* mat, int rows, int cols){ // TODO rm
 void ParallelHeatSolver::RunSolver(std::vector<float, AlignedAllocator<float>>& outResult){
     float* workTempArrays[2] = {lTempArray1.data(), lTempArray2.data()};
 
-    /*
     if(m_rank == 0){
         std::cout <<
             "edgeSize: " << edgeSize <<
             "\ttilesX: " << tilesX << "\ttilesY: " << tilesY << 
             "\ttileCols: " << tileCols << "\ttileRows: " << tileRows << std::endl; 
     }
+    /*
+    if(m_rank == 0){
+        std::cout <<
+            (atLeftBorder ? "L" : "-") << "\t" <<
+            (atRightBorder ? "R" : "-") << "\t" <<
+            (atTopBorder ? "T" : "-") << "\t" <<
+            (atBottomBorder ? "B" : "-") << std::endl;
+    }
     */
-   /*
-   if(m_rank == 0){
-       std::cout <<
-        (atLeftBorder ? "L" : "-") << "\t" <<
-        (atRightBorder ? "R" : "-") << "\t" <<
-        (atTopBorder ? "T" : "-") << "\t" <<
-        (atBottomBorder ? "B" : "-") << std::endl;
-   }
-   */
 
     const int lenX = tileEndX - tileStartX;
     const int lenY = tileEndY - tileStartY;
+
+    if(m_rank == 0){
+        std::cout <<
+            "rank" << m_rank << "\t" <<
+            "tileStartX: " << tileStartX << "\t" <<
+            "tileEndX: " << tileEndX << "\t" <<
+            "tileStartY: " << tileStartY << "\t" <<
+            "tileEndY: " << tileEndY << "\t" <<
+            "lenX: " << lenX << "\t" <<
+            "lenY: " << lenY << std::endl;
+    }
+    if(m_rank == 1){
+        std::cout <<
+            "rank" << m_rank << "\t" <<
+            "tileStartX: " << tileStartX << "\t" <<
+            "tileEndX: " << tileEndX << "\t" <<
+            "tileStartY: " << tileStartY << "\t" <<
+            "tileEndY: " << tileEndY << "\t" <<
+            "lenX: " << lenX << "\t" <<
+            "lenY: " << lenY << std::endl;
+    }
 
     // UpdateTile(...) method can be used to evaluate heat equation over 2D tile
     //                 in parallel (using OpenMP).
