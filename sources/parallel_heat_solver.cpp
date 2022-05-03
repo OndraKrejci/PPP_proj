@@ -321,6 +321,12 @@ void ParallelHeatSolver::RunSolver(std::vector<float, AlignedAllocator<float>>& 
 			<< std::endl;
 	}
 
+	// open windows
+	if(m_simulationProperties.IsRunParallelRMA()){
+		MPI_Win_fence(0, window1);
+		MPI_Win_fence(0, window2);
+	}
+
 	// UpdateTile(...) method can be used to evaluate heat equation over 2D tile
 	//                 in parallel (using OpenMP).
 	// NOTE: This method might be inefficient when used for small tiles such as 
@@ -359,8 +365,6 @@ void ParallelHeatSolver::RunSolver(std::vector<float, AlignedAllocator<float>>& 
 
 		// begin exchange of computed results
 		if(m_simulationProperties.IsRunParallelRMA()){
-			MPI_Win_fence(0, *windows[1]); // open window
-
 			if(!atLeftBorder){
 				MPI_Put(&workTempArrays[1][leftBorderSendIdx], 1, TYPE_TILE_BORDER_LR_FLOAT, neighbourLeft, rightBorderRecvIdx, 1, TYPE_TILE_BORDER_LR_FLOAT, *windows[1]);
 			}
