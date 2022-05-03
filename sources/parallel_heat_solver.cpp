@@ -87,10 +87,14 @@ ParallelHeatSolver::ParallelHeatSolver(SimulationProperties &simulationProps, Ma
     extendedTileRows = tileRows + DOUBLE_OFFSET;
     extendedTileSize = extendedTileCols * extendedTileRows;
 
-    if(m_rank == MPI_ROOT_RANK && (tileCols < OFFSET || tileRows < OFFSET)){
-        std::cerr
-            << "Requires a decomposition with tile of at least size [" << OFFSET << ", " << OFFSET << "],"
-            << "used [" << tileCols << ", " << tileRows << "]\n" << std::endl;
+    // size of tile cannot be less than size of border in any dimension
+    if(tileCols < OFFSET || tileRows < OFFSET){
+        if(m_rank == MPI_ROOT_RANK){
+            std::cerr
+                << "Requires a decomposition with tiles of at least size [" << OFFSET << ", " << OFFSET << "], "
+                << "used [" << tileCols << ", " << tileRows << "]\n" << std::endl;
+        }
+        MPI_Barrier(MPI_COMM_WORLD);
         MPI_Abort(MPI_COMM_WORLD, ERR_INVALID_DECOMPOSITION);
     }
     
@@ -161,12 +165,12 @@ ParallelHeatSolver::ParallelHeatSolver(SimulationProperties &simulationProps, Ma
 
 		MPI_Type_create_subarray(ndims, rsize, rsubsize, rstart, MPI_ORDER_C, MPI_FLOAT, &TYPE_ROOT_TILE_FLOAT_INITIAL);
 		MPI_Type_commit(&TYPE_ROOT_TILE_FLOAT_INITIAL);
-		MPI_Type_create_resized(TYPE_ROOT_TILE_FLOAT_INITIAL, 0, sizeof(float), &TYPE_ROOT_TILE_FLOAT);
+		MPI_Type_create_resized(TYPE_ROOT_TILE_FLOAT_INITIAL, 0, tileCols * sizeof(float), &TYPE_ROOT_TILE_FLOAT);
 		MPI_Type_commit(&TYPE_ROOT_TILE_FLOAT);
 
 		MPI_Type_create_subarray(ndims, rsize, rsubsize, rstart, MPI_ORDER_C, MPI_INT, &TYPE_ROOT_TILE_INT_INITIAL);
 		MPI_Type_commit(&TYPE_ROOT_TILE_INT_INITIAL);
-		MPI_Type_create_resized(TYPE_ROOT_TILE_INT_INITIAL, 0, sizeof(int), &TYPE_ROOT_TILE_INT);
+		MPI_Type_create_resized(TYPE_ROOT_TILE_INT_INITIAL, 0, tileCols * sizeof(int), &TYPE_ROOT_TILE_INT);
 		MPI_Type_commit(&TYPE_ROOT_TILE_INT);
 	}
 
@@ -178,7 +182,7 @@ ParallelHeatSolver::ParallelHeatSolver(SimulationProperties &simulationProps, Ma
     int k = 0;
     for(int i = 0; i < tilesY; i++){
         for(int j = 0; j < tilesX; j++){
-            vTileDisplacements[k++] = (tileSize * tilesX * i) + (tileCols * j);
+            vTileDisplacements[k++] = (i * tileRows * tilesX) + j;
         }
     }
 
@@ -285,38 +289,21 @@ void ParallelHeatSolver::RunSolver(std::vector<float, AlignedAllocator<float>>& 
             "\ttilesX: " << tilesX << "\ttilesY: " << tilesY << 
             "\ttileCols: " << tileCols << "\ttileRows: " << tileRows << std::endl; 
     }
-    /*
-    if(m_rank == 0){
-        std::cout <<
-            (atLeftBorder ? "L" : "-") << "\t" <<
-            (atRightBorder ? "R" : "-") << "\t" <<
-            (atTopBorder ? "T" : "-") << "\t" <<
-            (atBottomBorder ? "B" : "-") << std::endl;
-    }
-    */
 
     const int lenX = tileEndX - tileStartX;
     const int lenY = tileEndY - tileStartY;
+    const int rightBorderStartX = extendedTileCols - DOUBLE_OFFSET;
+    const int bottomBorderStartY = extendedTileRows - DOUBLE_OFFSET;
 
     if(m_rank == 0){
-        std::cout <<
-            "rank" << m_rank << "\t" <<
-            "tileStartX: " << tileStartX << "\t" <<
-            "tileEndX: " << tileEndX << "\t" <<
-            "tileStartY: " << tileStartY << "\t" <<
-            "tileEndY: " << tileEndY << "\t" <<
-            "lenX: " << lenX << "\t" <<
-            "lenY: " << lenY << std::endl;
-    }
-    if(m_rank == 1){
-        std::cout <<
-            "rank" << m_rank << "\t" <<
-            "tileStartX: " << tileStartX << "\t" <<
-            "tileEndX: " << tileEndX << "\t" <<
-            "tileStartY: " << tileStartY << "\t" <<
-            "tileEndY: " << tileEndY << "\t" <<
-            "lenX: " << lenX << "\t" <<
-            "lenY: " << lenY << std::endl;
+        std::cout
+            << "tileStartX: " << tileStartX << "\t"
+            << "tileEndX: " << tileEndX << "\t"
+            << "tileStartY: " << tileStartY << "\t"
+            << "tileEndY: " << tileEndY << "\t"
+            << "lenX: " << lenX << "\t"
+            << "lenY: " << lenY << "\t"
+            << std::endl;
     }
 
     // UpdateTile(...) method can be used to evaluate heat equation over 2D tile
@@ -325,12 +312,37 @@ void ParallelHeatSolver::RunSolver(std::vector<float, AlignedAllocator<float>>& 
     //       2xN or Nx2 (these might arise at edges of the tile)
     //       In this case ComputePoint may be called directly in loop.
     for(size_t iter = 0; iter < m_simulationProperties.GetNumIterations(); iter++){
-        UpdateTile(
-            workTempArrays[0], workTempArrays[1], lDomainParams.data(), lDomainMap.data(),
-            tileStartX, tileStartY, lenX, lenY, extendedTileCols,
-            m_simulationProperties.GetAirFlowRate(), m_materialProperties.GetCoolerTemp()
-        );
+        // compute borders first
+        if(!atLeftBorder && lenX >= OFFSET){
+            UpdateTile(
+                workTempArrays[0], workTempArrays[1], lDomainParams.data(), lDomainMap.data(),
+                OFFSET, tileStartY, OFFSET, lenY, extendedTileCols,
+                m_simulationProperties.GetAirFlowRate(), m_materialProperties.GetCoolerTemp()
+            );
+        }
+        if(!atRightBorder && lenX >= OFFSET){
+            UpdateTile(
+                workTempArrays[0], workTempArrays[1], lDomainParams.data(), lDomainMap.data(),
+                rightBorderStartX, tileStartY, OFFSET, lenY, extendedTileCols,
+                m_simulationProperties.GetAirFlowRate(), m_materialProperties.GetCoolerTemp()
+            );
+        }
+        if(!atTopBorder && lenY >= OFFSET){
+            UpdateTile(
+                workTempArrays[0], workTempArrays[1], lDomainParams.data(), lDomainMap.data(),
+                tileStartX, OFFSET, lenX, OFFSET, extendedTileCols,
+                m_simulationProperties.GetAirFlowRate(), m_materialProperties.GetCoolerTemp()
+            );
+        }
+        if(!atBottomBorder && lenY >= OFFSET){
+            UpdateTile(
+                workTempArrays[0], workTempArrays[1], lDomainParams.data(), lDomainMap.data(),
+                tileStartX, bottomBorderStartY, lenX, OFFSET, extendedTileCols,
+                m_simulationProperties.GetAirFlowRate(), m_materialProperties.GetCoolerTemp()
+            );
+        }
 
+        // begin exchange of computed results
         MPI_Request reqs[8];
         unsigned i = 0;
         if(!atLeftBorder){
@@ -349,6 +361,17 @@ void ParallelHeatSolver::RunSolver(std::vector<float, AlignedAllocator<float>>& 
             MPI_Isend(&workTempArrays[1][bottomBorderSendIdx], 1, TYPE_TILE_BORDER_TB_FLOAT, neighbourBottom, TAG_INIT_BORDER_TEMP, MPI_COMM_WORLD, &reqs[i++]);
             MPI_Irecv(&workTempArrays[1][bottomBorderRecvIdx], 1, TYPE_TILE_BORDER_TB_FLOAT, neighbourBottom, TAG_INIT_BORDER_TEMP, MPI_COMM_WORLD, &reqs[i++]);
         }
+
+        // compute center of the tile
+        if(tileCols > DOUBLE_OFFSET && tileRows > DOUBLE_OFFSET){
+            UpdateTile(
+                workTempArrays[0], workTempArrays[1], lDomainParams.data(), lDomainMap.data(),
+                DOUBLE_OFFSET, DOUBLE_OFFSET, tileCols - DOUBLE_OFFSET, tileRows - DOUBLE_OFFSET, extendedTileCols,
+                m_simulationProperties.GetAirFlowRate(), m_materialProperties.GetCoolerTemp()
+            );
+        }
+
+        // wait for exchange of border to finish
         MPI_Waitall(i, reqs, MPI_STATUSES_IGNORE);
 
         std::swap(workTempArrays[0], workTempArrays[1]);
