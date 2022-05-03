@@ -378,20 +378,20 @@ void ParallelHeatSolver::RunSolver(std::vector<float, AlignedAllocator<float>>& 
 			i = 0;
 
 			if(!atLeftBorder){
-				MPI_Isend(&workTempArrays[1][leftBorderSendIdx], 1, TYPE_TILE_BORDER_LR_FLOAT, neighbourLeft, TAG_INIT_BORDER_TEMP, MPI_COMM_WORLD, &reqs[i++]);
-				MPI_Irecv(&workTempArrays[1][leftBorderRecvIdx], 1, TYPE_TILE_BORDER_LR_FLOAT, neighbourLeft, TAG_INIT_BORDER_TEMP, MPI_COMM_WORLD, &reqs[i++]);
+				MPI_Isend(&workTempArrays[1][leftBorderSendIdx], 1, TYPE_TILE_BORDER_LR_FLOAT, neighbourLeft, TAG_BORDER_EXCHANGE, MPI_COMM_WORLD, &reqs[i++]);
+				MPI_Irecv(&workTempArrays[1][leftBorderRecvIdx], 1, TYPE_TILE_BORDER_LR_FLOAT, neighbourLeft, TAG_BORDER_EXCHANGE, MPI_COMM_WORLD, &reqs[i++]);
 			}
 			if(!atRightBorder){
-				MPI_Isend(&workTempArrays[1][rightBorderSendIdx], 1, TYPE_TILE_BORDER_LR_FLOAT, neighbourRight, TAG_INIT_BORDER_TEMP, MPI_COMM_WORLD, &reqs[i++]);
-				MPI_Irecv(&workTempArrays[1][rightBorderRecvIdx], 1, TYPE_TILE_BORDER_LR_FLOAT, neighbourRight, TAG_INIT_BORDER_TEMP, MPI_COMM_WORLD, &reqs[i++]);
+				MPI_Isend(&workTempArrays[1][rightBorderSendIdx], 1, TYPE_TILE_BORDER_LR_FLOAT, neighbourRight, TAG_BORDER_EXCHANGE, MPI_COMM_WORLD, &reqs[i++]);
+				MPI_Irecv(&workTempArrays[1][rightBorderRecvIdx], 1, TYPE_TILE_BORDER_LR_FLOAT, neighbourRight, TAG_BORDER_EXCHANGE, MPI_COMM_WORLD, &reqs[i++]);
 			}
 			if(!atTopBorder){
-				MPI_Isend(&workTempArrays[1][topBorderSendIdx], 1, TYPE_TILE_BORDER_TB_FLOAT, neighbourTop, TAG_INIT_BORDER_TEMP, MPI_COMM_WORLD, &reqs[i++]);
-				MPI_Irecv(&workTempArrays[1][topBorderRecvIdx], 1, TYPE_TILE_BORDER_TB_FLOAT, neighbourTop, TAG_INIT_BORDER_TEMP, MPI_COMM_WORLD, &reqs[i++]);
+				MPI_Isend(&workTempArrays[1][topBorderSendIdx], 1, TYPE_TILE_BORDER_TB_FLOAT, neighbourTop, TAG_BORDER_EXCHANGE, MPI_COMM_WORLD, &reqs[i++]);
+				MPI_Irecv(&workTempArrays[1][topBorderRecvIdx], 1, TYPE_TILE_BORDER_TB_FLOAT, neighbourTop, TAG_BORDER_EXCHANGE, MPI_COMM_WORLD, &reqs[i++]);
 			}
 			if(!atBottomBorder){
-				MPI_Isend(&workTempArrays[1][bottomBorderSendIdx], 1, TYPE_TILE_BORDER_TB_FLOAT, neighbourBottom, TAG_INIT_BORDER_TEMP, MPI_COMM_WORLD, &reqs[i++]);
-				MPI_Irecv(&workTempArrays[1][bottomBorderRecvIdx], 1, TYPE_TILE_BORDER_TB_FLOAT, neighbourBottom, TAG_INIT_BORDER_TEMP, MPI_COMM_WORLD, &reqs[i++]);
+				MPI_Isend(&workTempArrays[1][bottomBorderSendIdx], 1, TYPE_TILE_BORDER_TB_FLOAT, neighbourBottom, TAG_BORDER_EXCHANGE, MPI_COMM_WORLD, &reqs[i++]);
+				MPI_Irecv(&workTempArrays[1][bottomBorderRecvIdx], 1, TYPE_TILE_BORDER_TB_FLOAT, neighbourBottom, TAG_BORDER_EXCHANGE, MPI_COMM_WORLD, &reqs[i++]);
 			}
 		}
 

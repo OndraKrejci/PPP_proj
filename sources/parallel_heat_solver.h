@@ -66,6 +66,7 @@ protected:
     const int TAG_INIT_BORDER_TEMP = 2;
     const int TAG_INIT_BORDER_DOMAIN_PARAMS = 3;
     const int TAG_INIT_BORDER_DOMAIN_MAP = 5;
+    const int TAG_BORDER_EXCHANGE = 6;
 
     AutoHandle<hid_t> m_fileHandle;
 
