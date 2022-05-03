@@ -119,6 +119,10 @@ protected:
     MPI_Datatype TYPE_ROOT_TILE_FLOAT;
     MPI_Datatype TYPE_ROOT_TILE_INT;
 
+    // RMA windows
+    MPI_Win window1;
+    MPI_Win window2;
+
     // tile border indices
     unsigned leftBorderSendIdx;
     unsigned rightBorderRecvIdx;
