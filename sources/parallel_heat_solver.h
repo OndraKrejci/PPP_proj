@@ -178,12 +178,6 @@ protected:
 
 	void sendMatrixToRoot(float* sendbuf, float* recvbuf);
 
-	void UpdateTileNonvector(const float *oldTemp, float *newTemp,
-									const float *params, const int *map,
-									size_t offsetX, size_t offsetY,
-									size_t sizeX, size_t sizeY, size_t strideX,
-									float airFlowRate, float coolerTemp) const;
-
 	void storeDataIntoFileParallel(const size_t iteration, const float* data);
 };
 

@@ -366,28 +366,28 @@ void ParallelHeatSolver::RunSolver(std::vector<float, AlignedAllocator<float>>& 
 	for(size_t iter = 0; iter < m_simulationProperties.GetNumIterations(); iter++){
 		// 7b) compute borders first
 		if(!atLeftBorder && lenX >= OFFSET){
-			UpdateTileNonvector(
+			UpdateTile(
 				workTempArrays[0], workTempArrays[1], lDomainParams.data(), lDomainMap.data(),
 				OFFSET, tileStartY, OFFSET, lenY, extendedTileCols,
 				m_simulationProperties.GetAirFlowRate(), m_materialProperties.GetCoolerTemp()
 			);
 		}
 		if(!atRightBorder && lenX >= OFFSET){
-			UpdateTileNonvector(
+			UpdateTile(
 				workTempArrays[0], workTempArrays[1], lDomainParams.data(), lDomainMap.data(),
 				rightBorderStartX, tileStartY, OFFSET, lenY, extendedTileCols,
 				m_simulationProperties.GetAirFlowRate(), m_materialProperties.GetCoolerTemp()
 			);
 		}
 		if(!atTopBorder && lenY >= OFFSET){
-			UpdateTileNonvector(
+			UpdateTile(
 				workTempArrays[0], workTempArrays[1], lDomainParams.data(), lDomainMap.data(),
 				tileStartX, OFFSET, lenX, OFFSET, extendedTileCols,
 				m_simulationProperties.GetAirFlowRate(), m_materialProperties.GetCoolerTemp()
 			);
 		}
 		if(!atBottomBorder && lenY >= OFFSET){
-			UpdateTileNonvector(
+			UpdateTile(
 				workTempArrays[0], workTempArrays[1], lDomainParams.data(), lDomainMap.data(),
 				tileStartX, bottomBorderStartY, lenX, OFFSET, extendedTileCols,
 				m_simulationProperties.GetAirFlowRate(), m_materialProperties.GetCoolerTemp()
@@ -432,7 +432,7 @@ void ParallelHeatSolver::RunSolver(std::vector<float, AlignedAllocator<float>>& 
 
 		// compute center of the tile
 		if(tileCols > DOUBLE_OFFSET && tileRows > DOUBLE_OFFSET){
-			UpdateTileNonvector(
+			UpdateTile(
 				workTempArrays[0], workTempArrays[1], lDomainParams.data(), lDomainMap.data(),
 				DOUBLE_OFFSET, DOUBLE_OFFSET, tileCols - DOUBLE_OFFSET, tileRows - DOUBLE_OFFSET, extendedTileCols,
 				m_simulationProperties.GetAirFlowRate(), m_materialProperties.GetCoolerTemp()
@@ -518,26 +518,6 @@ void ParallelHeatSolver::sendMatrixToRoot(float* sendbuf, float* recvbuf){
 		vTileCounts.data(), vTileDisplacements.data(), TYPE_ROOT_TILE_FLOAT,
 		MPI_ROOT_RANK, MPI_COMM_WORLD
 	);
-}
-
-void ParallelHeatSolver::UpdateTileNonvector(const float *oldTemp, float *newTemp,
-								const float *params, const int *map,
-								size_t offsetX, size_t offsetY,
-								size_t sizeX, size_t sizeY, size_t strideX,
-								float airFlowRate, float coolerTemp) const
-{
-	for(size_t i = offsetY; i < offsetY + sizeY; ++i)
-	{
-		for(size_t j = offsetX; j < offsetX + sizeX; ++j)
-		{
-			ComputePoint(oldTemp, newTemp,
-					params,
-					map,
-					i, j, strideX,
-					airFlowRate,
-					coolerTemp);
-		}
-	}
 }
 
 void ParallelHeatSolver::storeDataIntoFileParallel(const size_t iteration, const float* data){
