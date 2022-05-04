@@ -4,7 +4,7 @@
  *
  * @brief   Course: PPP 2021/2022 - Project 1
  *
- * @date    2021-05-01
+ * @date    2021-05-05
  */
 
 #include "parallel_heat_solver.h"
@@ -36,6 +36,22 @@ ParallelHeatSolver::ParallelHeatSolver(SimulationProperties &simulationProps, Ma
 	MPI_Comm_size(MPI_COMM_WORLD, &m_size);
 	MPI_Comm_rank(MPI_COMM_WORLD, &m_rank);
 
+	initSimulation();
+}
+
+void ParallelHeatSolver::initSimulation(){
+	initDecomposition();
+	initIO();
+	initMemory();
+	initTileInfo();
+	initTypes();
+	initRMA();
+	initMiddleColumnInfo();
+	initScatterTiles();
+	initBorderExchange();
+}
+
+void ParallelHeatSolver::initDecomposition(){
 	//// 2) Decomposition
 
 	// Requested domain decomposition can be queried by
@@ -50,6 +66,8 @@ ParallelHeatSolver::ParallelHeatSolver(SimulationProperties &simulationProps, Ma
 	extendedTileRows = tileRows + DOUBLE_OFFSET;
 	extendedTileSize = extendedTileCols * extendedTileRows;
 
+	matrixSize = edgeSize * edgeSize;
+
 	// size of tile cannot be less than size of border in any dimension
 	if(tileCols < OFFSET || tileRows < OFFSET){
 		if(m_rank == MPI_ROOT_RANK){
@@ -58,12 +76,13 @@ ParallelHeatSolver::ParallelHeatSolver(SimulationProperties &simulationProps, Ma
 				<< "used [" << tileCols << ", " << tileRows << "]\n" << std::endl;
 			MPI_Abort(MPI_COMM_WORLD, ERR_INVALID_DECOMPOSITION);
 		}
-		MPI_Barrier(MPI_COMM_WORLD);
+		MPI_Barrier(MPI_COMM_WORLD); // wait for root to print error and abort
 	}
-	
-	matrixSize = edgeSize * edgeSize;
+}
 
+void ParallelHeatSolver::initIO(){
 	//// 1) Input file
+
 	// Creating EMPTY HDF5 handle using RAII "AutoHandle" type
 	//
 	// AutoHandle<hid_t> myHandle(H5I_INVALID_HID, static_cast<void (*)(hid_t )>(nullptr))
@@ -79,7 +98,7 @@ ParallelHeatSolver::ParallelHeatSolver(SimulationProperties &simulationProps, Ma
 			H5Pset_fapl_mpio(accesPList, MPI_COMM_WORLD, MPI_INFO_NULL);
 
 			// Create a file called with write permission. Use such a flag that overrides existing file.
-			hid_t file = H5Fcreate(simulationProps.GetOutputFileName("par").c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, accesPList);
+			hid_t file = H5Fcreate(m_simulationProperties.GetOutputFileName("par").c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, accesPList);
 			m_fileHandle.Set(file, H5Fclose);
 
 			H5Pclose(accesPList);
@@ -109,17 +128,21 @@ ParallelHeatSolver::ParallelHeatSolver(SimulationProperties &simulationProps, Ma
 			xferPListHandle.Set(xferPList, H5Pclose);
 		}
 		else if(m_rank == MPI_ROOT_RANK){
-			hid_t file = H5Fcreate(simulationProps.GetOutputFileName("par").c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT);
+			hid_t file = H5Fcreate(m_simulationProperties.GetOutputFileName("par").c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT);
 			m_fileHandle.Set(file, H5Fclose);
 		}
 	}
+}
 
+void ParallelHeatSolver::initMemory(){
 	//// 3) Helper arrays for each process
 	lTempArray1.resize(extendedTileSize);
 	lTempArray2.resize(extendedTileSize);
 	lDomainParams.resize(extendedTileSize);
 	lDomainMap.resize(extendedTileSize);
+}
 
+void ParallelHeatSolver::initTileInfo(){
 	// position info
 	atLeftBorder = (m_rank % tilesX) == 0;
 	atRightBorder = (m_rank % tilesX) == (tilesX - 1);
@@ -140,11 +163,19 @@ ParallelHeatSolver::ParallelHeatSolver(SimulationProperties &simulationProps, Ma
 	if(atBottomBorder)
 		tileEndY -= OFFSET;
 
+	// neighbour indices
+	neighbourLeft = m_rank - 1;
+	neighbourRight = m_rank + 1;
+	neighbourTop = m_rank - tilesX;
+	neighbourBottom = m_rank + tilesX;
+}
+
+void ParallelHeatSolver::initTypes(){
 	// initialize types
 	constexpr int ndims = 2;
 	const int size[ndims] = {extendedTileRows, extendedTileCols};
 	const int subsize[ndims] = {tileRows, tileCols};
-	int start[ndims] = {OFFSET, OFFSET};
+	const int start[ndims] = {OFFSET, OFFSET};
 
 	// worker tiles
 	MPI_Type_create_subarray(ndims, size, subsize, start, MPI_ORDER_C, MPI_FLOAT, &TYPE_WORKER_TILE_FLOAT);
@@ -187,20 +218,26 @@ ParallelHeatSolver::ParallelHeatSolver(SimulationProperties &simulationProps, Ma
 		MPI_Type_create_resized(TYPE_ROOT_TILE_INT_INITIAL, 0, tileCols * sizeof(int), &TYPE_ROOT_TILE_INT);
 		MPI_Type_commit(&TYPE_ROOT_TILE_INT);
 	}
+}
 
+void ParallelHeatSolver::initRMA(){
 	// init RMA windows
 	if(m_simulationProperties.IsRunParallelRMA()){
 		MPI_Win_create(lTempArray1.data(), extendedTileSize * sizeof(float), sizeof(float), MPI_INFO_NULL, MPI_COMM_WORLD, &window1);
 		MPI_Win_create(lTempArray2.data(), extendedTileSize * sizeof(float), sizeof(float), MPI_INFO_NULL, MPI_COMM_WORLD, &window2);
 	}
+}
 
+void ParallelHeatSolver::initMiddleColumnInfo(){
 	// init for exchange of middle column temeprature
 	MPI_Comm_split(MPI_COMM_WORLD, m_rank % tilesX, m_rank / tilesX, &MPI_COMM_COLS);
 	middleColumnIndex = edgeSize / 2;
 	middleColumnTileCol = middleColumnIndex / tileCols;
 	containsMiddleColumn = (m_rank % tilesX) == middleColumnTileCol;
 	middleColumnTileColIndex = middleColumnIndex % tileCols;
+}
 
+void ParallelHeatSolver::initScatterTiles(){
 	//// 4) scatter tiles
 	vTileCounts.resize(tilesX * tilesY);
 	std::fill(vTileCounts.begin(), vTileCounts.end(), 1);
@@ -217,17 +254,9 @@ ParallelHeatSolver::ParallelHeatSolver(SimulationProperties &simulationProps, Ma
 	MPI_Scatterv(m_materialProperties.GetInitTemp().data(), vTileCounts.data(), vTileDisplacements.data(), TYPE_ROOT_TILE_FLOAT, lTempArray2.data(), 1, TYPE_WORKER_TILE_FLOAT, MPI_ROOT_RANK, MPI_COMM_WORLD);
 	MPI_Scatterv(m_materialProperties.GetDomainParams().data(), vTileCounts.data(), vTileDisplacements.data(), TYPE_ROOT_TILE_FLOAT, lDomainParams.data(), 1, TYPE_WORKER_TILE_FLOAT, MPI_ROOT_RANK, MPI_COMM_WORLD);
 	MPI_Scatterv(m_materialProperties.GetDomainMap().data(), vTileCounts.data(), vTileDisplacements.data(), TYPE_ROOT_TILE_INT, lDomainMap.data(), 1, TYPE_WORKER_TILE_INT, MPI_ROOT_RANK, MPI_COMM_WORLD);
-
-	// neighbour indices
-	neighbourLeft = m_rank - 1;
-	neighbourRight = m_rank + 1;
-	neighbourTop = m_rank - tilesX;
-	neighbourBottom = m_rank + tilesX;
-
-	initialBorderExchange();
 }
 
-void ParallelHeatSolver::initialBorderExchange(){
+void ParallelHeatSolver::initBorderExchange(){
 	MPI_Request reqs[8 * 3];
 	unsigned i = 0;
 

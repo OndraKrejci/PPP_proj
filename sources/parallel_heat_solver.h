@@ -4,7 +4,7 @@
  *
  * @brief   Course: PPP 2021/2022 - Project 1
  *
- * @date    2022-05-01
+ * @date    2022-05-05
  */
 
 #ifndef PARALLEL_HEAT_SOLVER_H
@@ -154,7 +154,25 @@ protected:
 	size_t middleColumnTileColIndex;
 	float middleColAvgTemp = 0.0f;
 
-	void initialBorderExchange();
+	void initSimulation();
+
+	void initDecomposition();
+
+	void initIO();
+
+	void initMemory();
+
+	void initTileInfo();
+
+	void initTypes();
+
+	void initRMA();
+
+	void initMiddleColumnInfo();
+
+	void initScatterTiles();
+
+	void initBorderExchange();
 
 	void computeMiddleColAvgTemp(const float* const data);
 
