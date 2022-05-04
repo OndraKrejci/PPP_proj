@@ -93,9 +93,9 @@ ParallelHeatSolver::ParallelHeatSolver(SimulationProperties &simulationProps, Ma
 			std::cerr
 				<< "Requires a decomposition with tiles of at least size [" << OFFSET << ", " << OFFSET << "], "
 				<< "used [" << tileCols << ", " << tileRows << "]\n" << std::endl;
+			MPI_Abort(MPI_COMM_WORLD, ERR_INVALID_DECOMPOSITION);
 		}
 		MPI_Barrier(MPI_COMM_WORLD);
-		MPI_Abort(MPI_COMM_WORLD, ERR_INVALID_DECOMPOSITION);
 	}
 	
 	matrixSize = edgeSize * edgeSize;
@@ -289,16 +289,6 @@ ParallelHeatSolver::~ParallelHeatSolver(){
 	}
 }
 
-void printMat(float* mat, int rows, int cols){ // TODO rm
-	for(int i = 0; i < rows; i ++){
-		for(int j = 0; j < cols; j ++){
-			const int idx = (i * cols) + j;
-			std::cout << mat[idx] << "\t";
-		}
-		std::cout << std::endl;
-	}
-}
-
 void ParallelHeatSolver::RunSolver(std::vector<float, AlignedAllocator<float>>& outResult){
 	float* workTempArrays[2] = {lTempArray1.data(), lTempArray2.data()};
 	double startTime;
@@ -313,33 +303,15 @@ void ParallelHeatSolver::RunSolver(std::vector<float, AlignedAllocator<float>>& 
 
 	MPI_Win* windows[2] = {&window1, &window2};
 
-	if(m_rank == 0){
-		std::cout <<
-			"edgeSize: " << edgeSize <<
-			"\ttilesX: " << tilesX << "\ttilesY: " << tilesY << 
-			"\ttileCols: " << tileCols << "\ttileRows: " << tileRows << std::endl; 
-	}
-
 	const int lenX = tileEndX - tileStartX;
 	const int lenY = tileEndY - tileStartY;
 	const int rightBorderStartX = extendedTileCols - DOUBLE_OFFSET;
 	const int bottomBorderStartY = extendedTileRows - DOUBLE_OFFSET;
 
-	if(m_rank == 0){
-		std::cout
-			<< "tileStartX: " << tileStartX << "\t"
-			<< "tileEndX: " << tileEndX << "\t"
-			<< "tileStartY: " << tileStartY << "\t"
-			<< "tileEndY: " << tileEndY << "\t"
-			<< "lenX: " << lenX << "\t"
-			<< "lenY: " << lenY << "\t"
-			<< std::endl;
-	}
-
 	// open windows
 	if(m_simulationProperties.IsRunParallelRMA()){
-		MPI_Win_fence(0, window1);
-		MPI_Win_fence(0, window2);
+		MPI_Win_fence(MPI_MODE_NOPRECEDE, window1);
+		MPI_Win_fence(MPI_MODE_NOPRECEDE, window2);
 	}
 
 	// UpdateTile(...) method can be used to evaluate heat equation over 2D tile
@@ -471,11 +443,7 @@ void ParallelHeatSolver::RunSolver(std::vector<float, AlignedAllocator<float>>& 
 	}
 
 	// 9) send all tiles back to root to the outResult array
-	MPI_Gatherv(
-		workTempArrays[0], 1, TYPE_WORKER_TILE_FLOAT, outResult.data(),
-		vTileCounts.data(), vTileDisplacements.data(), TYPE_ROOT_TILE_FLOAT,
-		MPI_ROOT_RANK, MPI_COMM_WORLD
-	);
+	sendMatrixToRoot(workTempArrays[0], outResult.data());
 }
 
 void ParallelHeatSolver::computeMiddleColAvgTemp(const float* const data){
@@ -508,7 +476,6 @@ void ParallelHeatSolver::sendMatrixToRoot(float* sendbuf, float* recvbuf){
 		MPI_ROOT_RANK, MPI_COMM_WORLD
 	);
 }
-
 
 void ParallelHeatSolver::UpdateTileNonvector(const float *oldTemp, float *newTemp,
                                 const float *params, const int *map,
