@@ -71,6 +71,10 @@ protected:
 
 	AutoHandle<hid_t> m_fileHandle;
 
+	// parallel IO
+	hid_t filespace;
+	hid_t memspace;
+
 	size_t edgeSize;
 	size_t matrixSize; // simulated area: edgeSize * edgeSize
 
@@ -160,6 +164,8 @@ protected:
 									size_t offsetX, size_t offsetY,
 									size_t sizeX, size_t sizeY, size_t strideX,
 									float airFlowRate, float coolerTemp) const;
+
+	void storeDataIntoFileParallel(const size_t iteration, const float* data);
 };
 
 #endif // PARALLEL_HEAT_SOLVER_H

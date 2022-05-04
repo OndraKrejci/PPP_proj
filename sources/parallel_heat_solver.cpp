@@ -33,46 +33,6 @@ ParallelHeatSolver::ParallelHeatSolver(SimulationProperties &simulationProps, Ma
 	MPI_Comm_size(MPI_COMM_WORLD, &m_size);
 	MPI_Comm_rank(MPI_COMM_WORLD, &m_rank);
 
-	//// 1) Input file
-	
-	// Creating EMPTY HDF5 handle using RAII "AutoHandle" type
-	//
-	// AutoHandle<hid_t> myHandle(H5I_INVALID_HID, static_cast<void (*)(hid_t )>(nullptr))
-	//
-	// This can be particularly useful when creating handle as class member!
-	// Handle CANNOT be assigned using "=" or copy-constructor, yet it can be set
-	// using ".Set(/* handle */, /* close/free function */)" as in:
-	// myHandle.Set(H5Fopen(...), H5Fclose);
-	if(!m_simulationProperties.GetOutputFileName().empty()){
-		if(m_simulationProperties.IsUseParallelIO()){
-			// Create a property list to open the HDF5 file using MPI-IO in the MPI_COMM_WORLD communicator.
-			hid_t accesPList = H5Pcreate(H5P_FILE_ACCESS);
-			H5Pset_fapl_mpio(accesPList, MPI_COMM_WORLD, MPI_INFO_NULL);
-
-			// Create a file called with write permission. Use such a flag that overrides existing file.
-			hid_t file = H5Fcreate(simulationProps.GetOutputFileName("par").c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, accesPList);
-			m_fileHandle.Set(file, H5Fclose);
-
-			H5Pclose(accesPList);
-
-			// TODO
-			/*
-			// Create file space - a 2D matrix [edgeSize][edgeSize]
-			// Create mem space  - a 2D matrix [lRows][nCols] mapped on 1D array lMatrix.
-			hsize_t rank = 2;
-			hsize_t datasetSize[] = {hsize_t(edgeSize), hsize_t(edgeSize)};
-			hsize_t memSize[]     = {hsize_t(lRows), hsize_t(nCols)};
-
-			hid_t filespace = H5Screate_simple(rank, datasetSize, nullptr);
-			hid_t memspace  = H5Screate_simple(rank, memSize,     nullptr);
-			*/
-		}
-		else if(m_rank == MPI_ROOT_RANK){
-			hid_t file = H5Fcreate(simulationProps.GetOutputFileName("par").c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT);
-			m_fileHandle.Set(file, H5Fclose);
-		}
-	}
-
 	//// 2) Decomposition
 
 	// Requested domain decomposition can be queried by
@@ -99,6 +59,42 @@ ParallelHeatSolver::ParallelHeatSolver(SimulationProperties &simulationProps, Ma
 	}
 	
 	matrixSize = edgeSize * edgeSize;
+
+	//// 1) Input file
+	// Creating EMPTY HDF5 handle using RAII "AutoHandle" type
+	//
+	// AutoHandle<hid_t> myHandle(H5I_INVALID_HID, static_cast<void (*)(hid_t )>(nullptr))
+	//
+	// This can be particularly useful when creating handle as class member!
+	// Handle CANNOT be assigned using "=" or copy-constructor, yet it can be set
+	// using ".Set(/* handle */, /* close/free function */)" as in:
+	// myHandle.Set(H5Fopen(...), H5Fclose);
+	if(!m_simulationProperties.GetOutputFileName().empty()){
+		if(m_simulationProperties.IsUseParallelIO()){
+			// Create a property list to open the HDF5 file using MPI-IO in the MPI_COMM_WORLD communicator.
+			hid_t accesPList = H5Pcreate(H5P_FILE_ACCESS);
+			H5Pset_fapl_mpio(accesPList, MPI_COMM_WORLD, MPI_INFO_NULL);
+
+			// Create a file called with write permission. Use such a flag that overrides existing file.
+			hid_t file = H5Fcreate(simulationProps.GetOutputFileName("par").c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, accesPList);
+			m_fileHandle.Set(file, H5Fclose);
+
+			H5Pclose(accesPList);
+
+			// Create file space - a 2D matrix [edgeSize][edgeSize]
+			// Create mem space  - a 2D matrix [extendedTileRows][extendedTileCols] mapped on 1D array lTempArray.
+			const hsize_t rank = 2;
+			const hsize_t datasetSize[2] = {hsize_t(edgeSize), hsize_t(edgeSize)};
+			const hsize_t memSize[2] = {hsize_t(extendedTileRows), hsize_t(extendedTileCols)};
+			
+			filespace = H5Screate_simple(rank, datasetSize, nullptr); // TODO
+			memspace  = H5Screate_simple(rank, memSize, nullptr);
+		}
+		else if(m_rank == MPI_ROOT_RANK){
+			hid_t file = H5Fcreate(simulationProps.GetOutputFileName("par").c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT);
+			m_fileHandle.Set(file, H5Fclose);
+		}
+	}
 
 	//// 3) Helper arrays for each process
 	lTempArray1.resize(extendedTileSize);
@@ -187,7 +183,7 @@ ParallelHeatSolver::ParallelHeatSolver(SimulationProperties &simulationProps, Ma
 	containsMiddleColumn = (m_rank % tilesX) == middleColumnTileCol;
 	middleColumnTileColIndex = middleColumnIndex % tileCols;
 
-	// 4) scatter tiles
+	//// 4) scatter tiles
 	vTileCounts.resize(tilesX * tilesY);
 	std::fill(vTileCounts.begin(), vTileCounts.end(), 1);
 
@@ -323,28 +319,28 @@ void ParallelHeatSolver::RunSolver(std::vector<float, AlignedAllocator<float>>& 
 	for(size_t iter = 0; iter < m_simulationProperties.GetNumIterations(); iter++){
 		// 7b) compute borders first
 		if(!atLeftBorder && lenX >= OFFSET){
-			UpdateTile(
+			UpdateTileNonvector(
 				workTempArrays[0], workTempArrays[1], lDomainParams.data(), lDomainMap.data(),
 				OFFSET, tileStartY, OFFSET, lenY, extendedTileCols,
 				m_simulationProperties.GetAirFlowRate(), m_materialProperties.GetCoolerTemp()
 			);
 		}
 		if(!atRightBorder && lenX >= OFFSET){
-			UpdateTile(
+			UpdateTileNonvector(
 				workTempArrays[0], workTempArrays[1], lDomainParams.data(), lDomainMap.data(),
 				rightBorderStartX, tileStartY, OFFSET, lenY, extendedTileCols,
 				m_simulationProperties.GetAirFlowRate(), m_materialProperties.GetCoolerTemp()
 			);
 		}
 		if(!atTopBorder && lenY >= OFFSET){
-			UpdateTile(
+			UpdateTileNonvector(
 				workTempArrays[0], workTempArrays[1], lDomainParams.data(), lDomainMap.data(),
 				tileStartX, OFFSET, lenX, OFFSET, extendedTileCols,
 				m_simulationProperties.GetAirFlowRate(), m_materialProperties.GetCoolerTemp()
 			);
 		}
 		if(!atBottomBorder && lenY >= OFFSET){
-			UpdateTile(
+			UpdateTileNonvector(
 				workTempArrays[0], workTempArrays[1], lDomainParams.data(), lDomainMap.data(),
 				tileStartX, bottomBorderStartY, lenX, OFFSET, extendedTileCols,
 				m_simulationProperties.GetAirFlowRate(), m_materialProperties.GetCoolerTemp()
@@ -389,7 +385,7 @@ void ParallelHeatSolver::RunSolver(std::vector<float, AlignedAllocator<float>>& 
 
 		// compute center of the tile
 		if(tileCols > DOUBLE_OFFSET && tileRows > DOUBLE_OFFSET){
-			UpdateTile(
+			UpdateTileNonvector(
 				workTempArrays[0], workTempArrays[1], lDomainParams.data(), lDomainMap.data(),
 				DOUBLE_OFFSET, DOUBLE_OFFSET, tileCols - DOUBLE_OFFSET, tileRows - DOUBLE_OFFSET, extendedTileCols,
 				m_simulationProperties.GetAirFlowRate(), m_materialProperties.GetCoolerTemp()
@@ -408,7 +404,7 @@ void ParallelHeatSolver::RunSolver(std::vector<float, AlignedAllocator<float>>& 
 		// 7c) store data into a file 
 		if(!m_simulationProperties.GetOutputFileName().empty() && ((iter % m_simulationProperties.GetDiskWriteIntensity()) == 0)){
 			if(m_simulationProperties.IsUseParallelIO()){
-				// TODO
+				storeDataIntoFileParallel(iter, workTempArrays[1]);
 			}
 			else{
 				sendMatrixToRoot(workTempArrays[1], outResult.data());
@@ -478,21 +474,88 @@ void ParallelHeatSolver::sendMatrixToRoot(float* sendbuf, float* recvbuf){
 }
 
 void ParallelHeatSolver::UpdateTileNonvector(const float *oldTemp, float *newTemp,
-                                const float *params, const int *map,
-                                size_t offsetX, size_t offsetY,
-                                size_t sizeX, size_t sizeY, size_t strideX,
-                                float airFlowRate, float coolerTemp) const
+								const float *params, const int *map,
+								size_t offsetX, size_t offsetY,
+								size_t sizeX, size_t sizeY, size_t strideX,
+								float airFlowRate, float coolerTemp) const
 {
-    for(size_t i = offsetY; i < offsetY + sizeY; ++i)
-    {
-        for(size_t j = offsetX; j < offsetX + sizeX; ++j)
-        {
-            ComputePoint(oldTemp, newTemp,
-                    params,
-                    map,
-                    i, j, strideX,
-                    airFlowRate,
-                    coolerTemp);
-        }
-    }
+	for(size_t i = offsetY; i < offsetY + sizeY; ++i)
+	{
+		for(size_t j = offsetX; j < offsetX + sizeX; ++j)
+		{
+			ComputePoint(oldTemp, newTemp,
+					params,
+					map,
+					i, j, strideX,
+					airFlowRate,
+					coolerTemp);
+		}
+	}
+}
+
+void ParallelHeatSolver::storeDataIntoFileParallel(const size_t iteration, const float* data){
+	const hsize_t gridSize[2] = {edgeSize, edgeSize};
+
+	// 1. Create new HDF5 file group named as "Timestep_N", where "N" is number
+	//    of current snapshot. The group is placed into root of the file "/Timestep_N".
+	const std::string groupName = "Timestep_" + std::to_string(static_cast<unsigned long long>(iteration / m_simulationProperties.GetDiskWriteIntensity()));
+	AutoHandle<hid_t> groupHandle(
+		H5Gcreate(m_fileHandle, groupName.c_str(), H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT),
+		H5Gclose
+	);
+
+	{
+		// 2. Create new dataset "/Timestep_N/Temperature" which is simulation-domain
+		//    sized 2D array of "float"s.
+		const std::string dataSetName("Temperature");
+		// 2.1 Define shape of the dataset (2D edgeSize x edgeSize array).
+		AutoHandle<hid_t> dataSpaceHandle(H5Screate_simple(2, gridSize, NULL), H5Sclose);
+		// 2.2 Create dataset with specified shape.
+		AutoHandle<hid_t> dataSetHandle(
+			H5Dcreate(
+				groupHandle, dataSetName.c_str(), H5T_NATIVE_FLOAT, dataSpaceHandle,
+				H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT
+			),
+			H5Dclose
+		);
+
+		// Select a hyperslab to write a local submatrix into the dataset.
+		const hsize_t fsStart[2] = {(m_rank / tilesX) * tileRows, (m_rank % tilesX) * tileCols};
+		const hsize_t count[2] = {tileRows, tileCols};
+		const hsize_t msStart[2] = {OFFSET, OFFSET};
+		H5Sselect_hyperslab(filespace, H5S_SELECT_SET, fsStart, nullptr, count, nullptr);
+		H5Sselect_hyperslab(memspace, H5S_SELECT_SET, msStart, nullptr, count, nullptr);
+
+		// Create XFER property list and set Collective IO.
+		hid_t xferPList = H5Pcreate(H5P_DATASET_XFER);
+		H5Pset_dxpl_mpio(xferPList, H5FD_MPIO_COLLECTIVE);
+
+		// Write the data from memory pointed by "data" into new dataset.
+		H5Dwrite(dataSetHandle, H5T_NATIVE_FLOAT, memspace, filespace, xferPList, data);
+
+		// Close XREF property list.
+		H5Pclose(xferPList);
+	}
+
+	{
+		// 3. Create Integer attribute in the same group "/Timestep_N/Time"
+		//    in which we store number of current simulation iteration.
+		const std::string attributeName("Time");
+
+		// 3.1 Dataspace is single value/scalar.
+		AutoHandle<hid_t> dataSpaceHandle(H5Screate(H5S_SCALAR), H5Sclose);
+
+		// 3.2 Create the attribute in the group as double.
+		AutoHandle<hid_t> attributeHandle(
+			H5Acreate2(
+				groupHandle, attributeName.c_str(), H5T_IEEE_F64LE, dataSpaceHandle,
+				H5P_DEFAULT, H5P_DEFAULT
+			),
+			H5Aclose
+		);
+
+		// 3.3 Write value into the attribute.
+		const double snapshotTime = double(iteration);
+		H5Awrite(attributeHandle, H5T_IEEE_F64LE, &snapshotTime);
+	}
 }
