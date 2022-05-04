@@ -72,8 +72,9 @@ protected:
 	AutoHandle<hid_t> m_fileHandle;
 
 	// parallel IO
-	hid_t filespace;
-	hid_t memspace;
+	AutoHandle<hid_t> filespaceHandle;
+	AutoHandle<hid_t> memspaceHandle;
+	AutoHandle<hid_t> xferPListHandle;
 
 	size_t edgeSize;
 	size_t matrixSize; // simulated area: edgeSize * edgeSize

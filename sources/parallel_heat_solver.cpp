@@ -28,6 +28,9 @@ constexpr int ERR_INVALID_DECOMPOSITION = 1;
 ParallelHeatSolver::ParallelHeatSolver(SimulationProperties &simulationProps, MaterialProperties &materialProps)
 	:   BaseHeatSolver (simulationProps, materialProps),
 		m_fileHandle(H5I_INVALID_HID, static_cast<void (*)(hid_t )>(nullptr)),
+		filespaceHandle(H5I_INVALID_HID, static_cast<void (*)(hid_t )>(nullptr)),
+		memspaceHandle(H5I_INVALID_HID, static_cast<void (*)(hid_t )>(nullptr)),
+		xferPListHandle(H5I_INVALID_HID, static_cast<void (*)(hid_t )>(nullptr)),
 		edgeSize(materialProps.GetEdgeSize())
 {
 	MPI_Comm_size(MPI_COMM_WORLD, &m_size);
@@ -87,8 +90,23 @@ ParallelHeatSolver::ParallelHeatSolver(SimulationProperties &simulationProps, Ma
 			const hsize_t datasetSize[2] = {hsize_t(edgeSize), hsize_t(edgeSize)};
 			const hsize_t memSize[2] = {hsize_t(extendedTileRows), hsize_t(extendedTileCols)};
 			
-			filespace = H5Screate_simple(rank, datasetSize, nullptr); // TODO
-			memspace  = H5Screate_simple(rank, memSize, nullptr);
+			hid_t filespace = H5Screate_simple(rank, datasetSize, nullptr);
+			hid_t memspace  = H5Screate_simple(rank, memSize, nullptr);
+
+			// Select a hyperslab to write a local submatrix into the dataset.
+			const hsize_t fsStart[2] = {hsize_t((m_rank / tilesX) * tileRows), hsize_t((m_rank % tilesX) * tileCols)};
+			const hsize_t count[2] = {hsize_t(tileRows), hsize_t(tileCols)};
+			const hsize_t msStart[2] = {hsize_t(OFFSET), hsize_t(OFFSET)};
+			H5Sselect_hyperslab(filespace, H5S_SELECT_SET, fsStart, nullptr, count, nullptr);
+			H5Sselect_hyperslab(memspace, H5S_SELECT_SET, msStart, nullptr, count, nullptr);
+
+			filespaceHandle.Set(filespace, H5Sclose);
+			memspaceHandle.Set(memspace, H5Sclose);
+
+			// Create XFER property list and set Collective IO.
+			hid_t xferPList = H5Pcreate(H5P_DATASET_XFER);
+			H5Pset_dxpl_mpio(xferPList, H5FD_MPIO_COLLECTIVE);
+			xferPListHandle.Set(xferPList, H5Pclose);
 		}
 		else if(m_rank == MPI_ROOT_RANK){
 			hid_t file = H5Fcreate(simulationProps.GetOutputFileName("par").c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT);
@@ -494,8 +512,6 @@ void ParallelHeatSolver::UpdateTileNonvector(const float *oldTemp, float *newTem
 }
 
 void ParallelHeatSolver::storeDataIntoFileParallel(const size_t iteration, const float* data){
-	const hsize_t gridSize[2] = {edgeSize, edgeSize};
-
 	// 1. Create new HDF5 file group named as "Timestep_N", where "N" is number
 	//    of current snapshot. The group is placed into root of the file "/Timestep_N".
 	const std::string groupName = "Timestep_" + std::to_string(static_cast<unsigned long long>(iteration / m_simulationProperties.GetDiskWriteIntensity()));
@@ -505,6 +521,8 @@ void ParallelHeatSolver::storeDataIntoFileParallel(const size_t iteration, const
 	);
 
 	{
+		const hsize_t gridSize[2] = {edgeSize, edgeSize};
+
 		// 2. Create new dataset "/Timestep_N/Temperature" which is simulation-domain
 		//    sized 2D array of "float"s.
 		const std::string dataSetName("Temperature");
@@ -519,22 +537,8 @@ void ParallelHeatSolver::storeDataIntoFileParallel(const size_t iteration, const
 			H5Dclose
 		);
 
-		// Select a hyperslab to write a local submatrix into the dataset.
-		const hsize_t fsStart[2] = {(m_rank / tilesX) * tileRows, (m_rank % tilesX) * tileCols};
-		const hsize_t count[2] = {tileRows, tileCols};
-		const hsize_t msStart[2] = {OFFSET, OFFSET};
-		H5Sselect_hyperslab(filespace, H5S_SELECT_SET, fsStart, nullptr, count, nullptr);
-		H5Sselect_hyperslab(memspace, H5S_SELECT_SET, msStart, nullptr, count, nullptr);
-
-		// Create XFER property list and set Collective IO.
-		hid_t xferPList = H5Pcreate(H5P_DATASET_XFER);
-		H5Pset_dxpl_mpio(xferPList, H5FD_MPIO_COLLECTIVE);
-
 		// Write the data from memory pointed by "data" into new dataset.
-		H5Dwrite(dataSetHandle, H5T_NATIVE_FLOAT, memspace, filespace, xferPList, data);
-
-		// Close XREF property list.
-		H5Pclose(xferPList);
+		H5Dwrite(dataSetHandle, H5T_NATIVE_FLOAT, memspaceHandle, filespaceHandle, xferPListHandle, data);
 	}
 
 	{
