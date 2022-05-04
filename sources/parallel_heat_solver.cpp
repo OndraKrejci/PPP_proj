@@ -180,7 +180,14 @@ ParallelHeatSolver::ParallelHeatSolver(SimulationProperties &simulationProps, Ma
 		MPI_Win_create(lTempArray2.data(), extendedTileSize * sizeof(float), sizeof(float), MPI_INFO_NULL, MPI_COMM_WORLD, &window2);
 	}
 
-	// scatter tiles
+	// init for exchange of middle column temeprature
+	MPI_Comm_split(MPI_COMM_WORLD, m_rank % tilesX, m_rank / tilesX, &MPI_COMM_COLS);
+	middleColumnIndex = edgeSize / 2;
+	middleColumnTileCol = middleColumnIndex / tileCols;
+	containsMiddleColumn = (m_rank % tilesX) == middleColumnTileCol;
+	middleColumnTileColIndex = middleColumnIndex % tileCols;
+
+	// 4) scatter tiles
 	vTileCounts.resize(tilesX * tilesY);
 	std::fill(vTileCounts.begin(), vTileCounts.end(), 1);
 
@@ -274,6 +281,8 @@ void ParallelHeatSolver::initialBorderExchange(){
 }
 
 ParallelHeatSolver::~ParallelHeatSolver(){
+	MPI_Comm_free(&MPI_COMM_COLS);
+
 	if(m_simulationProperties.IsRunParallelRMA()){
 		MPI_Win_free(&window1);
 		MPI_Win_free(&window2);
@@ -292,6 +301,12 @@ void printMat(float* mat, int rows, int cols){ // TODO rm
 
 void ParallelHeatSolver::RunSolver(std::vector<float, AlignedAllocator<float>>& outResult){
 	float* workTempArrays[2] = {lTempArray1.data(), lTempArray2.data()};
+	double startTime;
+
+	// 5) Store start time at the root rank
+	if(m_rank == MPI_ROOT_RANK){
+		startTime = MPI_Wtime();
+	}
 
 	MPI_Request reqs[8];
 	unsigned i = 0;
@@ -332,8 +347,9 @@ void ParallelHeatSolver::RunSolver(std::vector<float, AlignedAllocator<float>>& 
 	// NOTE: This method might be inefficient when used for small tiles such as 
 	//       2xN or Nx2 (these might arise at edges of the tile)
 	//       In this case ComputePoint may be called directly in loop.
+	// 6), 7) run simulation with `m_simulationProperties.GetNumIterations()` steps
 	for(size_t iter = 0; iter < m_simulationProperties.GetNumIterations(); iter++){
-		// compute borders first
+		// 7b) compute borders first
 		if(!atLeftBorder && lenX >= OFFSET){
 			UpdateTile(
 				workTempArrays[0], workTempArrays[1], lDomainParams.data(), lDomainMap.data(),
@@ -417,18 +433,55 @@ void ParallelHeatSolver::RunSolver(std::vector<float, AlignedAllocator<float>>& 
 			MPI_Waitall(i, reqs, MPI_STATUSES_IGNORE);
 		}
 
+		// ShouldPrintProgress(N) returns true if average temperature should be reported
+		// by 0th process at Nth time step (using "PrintProgressReport(...)").
+		// 7d) print progress (middle column temperature)
+		if(ShouldPrintProgress(iter)){
+			computeMiddleColAvgTemp(workTempArrays[1]);
+
+			if(m_rank == MPI_ROOT_RANK){
+				PrintProgressReport(iter, middleColAvgTemp);
+			}
+		}
+
 		std::swap(workTempArrays[0], workTempArrays[1]);
 	}
 
+	// 8) print final report
+	computeMiddleColAvgTemp(workTempArrays[0]); // arrays were swapped, final values are in the first one
+	if(m_rank == MPI_ROOT_RANK){
+		const double elapsedTime = MPI_Wtime() - startTime;
+		PrintFinalReport(elapsedTime, middleColAvgTemp, "par");
+	}
+
+	// 9) send all tiles back to root to the outResult array
 	MPI_Gatherv(
 		workTempArrays[0], 1, TYPE_WORKER_TILE_FLOAT, outResult.data(),
 		vTileCounts.data(), vTileDisplacements.data(), TYPE_ROOT_TILE_FLOAT,
 		MPI_ROOT_RANK, MPI_COMM_WORLD
 	);
 	
-	// ShouldPrintProgress(N) returns true if average temperature should be reported
-	// by 0th process at Nth time step (using "PrintProgressReport(...)").
-	
 	// Finally "PrintFinalReport(...)" should be used to print final elapsed time and
 	// average temperature in column.
+}
+
+void ParallelHeatSolver::computeMiddleColAvgTemp(const float* const data){
+	if(containsMiddleColumn){
+		float localTempSum = 0.0f;
+		for(size_t i = OFFSET; i < tileRows + OFFSET; i++){
+			localTempSum += data[(i * extendedTileCols) + OFFSET + middleColumnTileColIndex];
+		}
+		MPI_Reduce(&localTempSum, &middleColAvgTemp, 1, MPI_FLOAT, MPI_SUM, MPI_ROOT_RANK, MPI_COMM_COLS);
+	}
+
+	if(m_size > 1){
+		if(middleColumnTileCol){ // root rank of the middle column
+			middleColAvgTemp /= edgeSize;
+			MPI_Send(&middleColAvgTemp, 1, MPI_FLOAT, MPI_ROOT_RANK, TAG_MIDDLE_COL, MPI_COMM_WORLD);
+		}
+
+		if(m_rank == MPI_ROOT_RANK){
+			MPI_Recv(&middleColAvgTemp, 1, MPI_FLOAT, middleColumnTileCol, TAG_MIDDLE_COL, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+		}
+	}
 }
