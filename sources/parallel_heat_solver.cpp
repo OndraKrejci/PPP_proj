@@ -461,6 +461,8 @@ void ParallelHeatSolver::RunSolver(std::vector<float, AlignedAllocator<float>>& 
 		std::swap(workTempArrays[0], workTempArrays[1]);
 	}
 
+	// Finally "PrintFinalReport(...)" should be used to print final elapsed time and
+	// average temperature in column.
 	// 8) print final report
 	computeMiddleColAvgTemp(workTempArrays[0]); // arrays were swapped, final values are in the first one
 	if(m_rank == MPI_ROOT_RANK){
@@ -474,9 +476,6 @@ void ParallelHeatSolver::RunSolver(std::vector<float, AlignedAllocator<float>>& 
 		vTileCounts.data(), vTileDisplacements.data(), TYPE_ROOT_TILE_FLOAT,
 		MPI_ROOT_RANK, MPI_COMM_WORLD
 	);
-	
-	// Finally "PrintFinalReport(...)" should be used to print final elapsed time and
-	// average temperature in column.
 }
 
 void ParallelHeatSolver::computeMiddleColAvgTemp(const float* const data){
@@ -490,7 +489,6 @@ void ParallelHeatSolver::computeMiddleColAvgTemp(const float* const data){
 
 	if(m_size > 1){
 		if(middleColumnTileCol){ // root rank of the middle column
-			middleColAvgTemp /= edgeSize;
 			MPI_Send(&middleColAvgTemp, 1, MPI_FLOAT, MPI_ROOT_RANK, TAG_MIDDLE_COL, MPI_COMM_WORLD);
 		}
 
@@ -498,6 +496,9 @@ void ParallelHeatSolver::computeMiddleColAvgTemp(const float* const data){
 			MPI_Recv(&middleColAvgTemp, 1, MPI_FLOAT, middleColumnTileCol, TAG_MIDDLE_COL, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 		}
 	}
+
+	if(m_rank == MPI_ROOT_RANK)
+		middleColAvgTemp /= edgeSize;
 }
 
 void ParallelHeatSolver::sendMatrixToRoot(float* sendbuf, float* recvbuf){
@@ -506,4 +507,25 @@ void ParallelHeatSolver::sendMatrixToRoot(float* sendbuf, float* recvbuf){
 		vTileCounts.data(), vTileDisplacements.data(), TYPE_ROOT_TILE_FLOAT,
 		MPI_ROOT_RANK, MPI_COMM_WORLD
 	);
+}
+
+
+void ParallelHeatSolver::UpdateTileNonvector(const float *oldTemp, float *newTemp,
+                                const float *params, const int *map,
+                                size_t offsetX, size_t offsetY,
+                                size_t sizeX, size_t sizeY, size_t strideX,
+                                float airFlowRate, float coolerTemp) const
+{
+    for(size_t i = offsetY; i < offsetY + sizeY; ++i)
+    {
+        for(size_t j = offsetX; j < offsetX + sizeX; ++j)
+        {
+            ComputePoint(oldTemp, newTemp,
+                    params,
+                    map,
+                    i, j, strideX,
+                    airFlowRate,
+                    coolerTemp);
+        }
+    }
 }

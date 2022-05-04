@@ -154,6 +154,12 @@ protected:
 	void computeMiddleColAvgTemp(const float* const data);
 
 	void sendMatrixToRoot(float* sendbuf, float* recvbuf);
+
+	void UpdateTileNonvector(const float *oldTemp, float *newTemp,
+									const float *params, const int *map,
+									size_t offsetX, size_t offsetY,
+									size_t sizeX, size_t sizeY, size_t strideX,
+									float airFlowRate, float coolerTemp) const;
 };
 
 #endif // PARALLEL_HEAT_SOLVER_H
