@@ -45,11 +45,11 @@ ParallelHeatSolver::ParallelHeatSolver(SimulationProperties &simulationProps, Ma
 	// myHandle.Set(H5Fopen(...), H5Fclose);
 	if(!m_simulationProperties.GetOutputFileName().empty()){
 		if(m_simulationProperties.IsUseParallelIO()){
-			// 1. Create a property list to open the HDF5 file using MPI-IO in the MPI_COMM_WORLD communicator.
+			// Create a property list to open the HDF5 file using MPI-IO in the MPI_COMM_WORLD communicator.
 			hid_t accesPList = H5Pcreate(H5P_FILE_ACCESS);
 			H5Pset_fapl_mpio(accesPList, MPI_COMM_WORLD, MPI_INFO_NULL);
 
-			// 3. Create a file called with write permission. Use such a flag that overrides existing file.
+			// Create a file called with write permission. Use such a flag that overrides existing file.
 			hid_t file = H5Fcreate(simulationProps.GetOutputFileName("par").c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, accesPList);
 			m_fileHandle.Set(file, H5Fclose);
 
@@ -57,8 +57,8 @@ ParallelHeatSolver::ParallelHeatSolver(SimulationProperties &simulationProps, Ma
 
 			// TODO
 			/*
-			// 5. Create file space - a 2D matrix [edgeSize][edgeSize]
-			//    Create mem space  - a 2D matrix [lRows][nCols] mapped on 1D array lMatrix.
+			// Create file space - a 2D matrix [edgeSize][edgeSize]
+			// Create mem space  - a 2D matrix [lRows][nCols] mapped on 1D array lMatrix.
 			hsize_t rank = 2;
 			hsize_t datasetSize[] = {hsize_t(edgeSize), hsize_t(edgeSize)};
 			hsize_t memSize[]     = {hsize_t(lRows), hsize_t(nCols)};
@@ -433,6 +433,20 @@ void ParallelHeatSolver::RunSolver(std::vector<float, AlignedAllocator<float>>& 
 			MPI_Waitall(i, reqs, MPI_STATUSES_IGNORE);
 		}
 
+		// 7c) store data into a file 
+		if(!m_simulationProperties.GetOutputFileName().empty() && ((iter % m_simulationProperties.GetDiskWriteIntensity()) == 0)){
+			if(m_simulationProperties.IsUseParallelIO()){
+				// TODO
+			}
+			else{
+				sendMatrixToRoot(workTempArrays[1], outResult.data());
+
+				if(m_rank == MPI_ROOT_RANK){
+					StoreDataIntoFile(m_fileHandle, iter, outResult.data());
+				}
+			}
+		}
+
 		// ShouldPrintProgress(N) returns true if average temperature should be reported
 		// by 0th process at Nth time step (using "PrintProgressReport(...)").
 		// 7d) print progress (middle column temperature)
@@ -484,4 +498,12 @@ void ParallelHeatSolver::computeMiddleColAvgTemp(const float* const data){
 			MPI_Recv(&middleColAvgTemp, 1, MPI_FLOAT, middleColumnTileCol, TAG_MIDDLE_COL, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 		}
 	}
+}
+
+void ParallelHeatSolver::sendMatrixToRoot(float* sendbuf, float* recvbuf){
+	MPI_Gatherv(
+		sendbuf, 1, TYPE_WORKER_TILE_FLOAT, recvbuf,
+		vTileCounts.data(), vTileDisplacements.data(), TYPE_ROOT_TILE_FLOAT,
+		MPI_ROOT_RANK, MPI_COMM_WORLD
+	);
 }

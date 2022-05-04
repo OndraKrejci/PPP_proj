@@ -152,6 +152,8 @@ protected:
 	void initialBorderExchange();
 
 	void computeMiddleColAvgTemp(const float* const data);
+
+	void sendMatrixToRoot(float* sendbuf, float* recvbuf);
 };
 
 #endif // PARALLEL_HEAT_SOLVER_H
