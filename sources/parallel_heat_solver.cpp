@@ -498,7 +498,8 @@ void ParallelHeatSolver::computeMiddleColAvgTemp(const float* const data){
 		MPI_Reduce(&localTempSum, &middleColAvgTemp, 1, MPI_FLOAT, MPI_SUM, MPI_ROOT_RANK, MPI_COMM_COLS);
 	}
 
-	if(m_size > 1){
+	// more than one tile in X direction => root rank of middle column is not root rank => send data to root
+	if(tilesX > 1){
 		if(middleColumnTileCol){ // root rank of the middle column
 			MPI_Send(&middleColAvgTemp, 1, MPI_FLOAT, MPI_ROOT_RANK, TAG_MIDDLE_COL, MPI_COMM_WORLD);
 		}
