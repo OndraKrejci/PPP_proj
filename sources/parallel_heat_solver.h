@@ -62,7 +62,7 @@ protected:
 	int m_rank;     ///< Process rank in global (MPI_COMM_WORLD) communicator.
 	int m_size;     ///< Total number of processes in MPI_COMM_WORLD.
 
-	const int TAG_COMM = 1;
+	// tags
 	const int TAG_INIT_BORDER_TEMP = 2;
 	const int TAG_INIT_BORDER_DOMAIN_PARAMS = 3;
 	const int TAG_INIT_BORDER_DOMAIN_MAP = 5;
@@ -76,6 +76,7 @@ protected:
 	AutoHandle<hid_t> memspaceHandle;
 	AutoHandle<hid_t> xferPListHandle;
 
+	// matrix size
 	size_t edgeSize;
 	size_t matrixSize; // simulated area: edgeSize * edgeSize
 
@@ -83,6 +84,7 @@ protected:
 	int tilesX;
 	int tilesY;
 
+	// borders
 	const size_t OFFSET = 2;
 	const size_t DOUBLE_OFFSET = OFFSET * 2;
 
@@ -154,30 +156,76 @@ protected:
 	size_t middleColumnTileColIndex;
 	float middleColAvgTemp = 0.0f;
 
+	/**
+	 * Initializes the simulation.
+	 * Runs all initialization methods in the correct order.
+	 */
 	void initSimulation();
 
+	/**
+	 * Saves the required decomposition and calculates tile sizes.
+	 * Also check that the tile has length of at least 2 in each dimension.
+	 */
 	void initDecomposition();
 
+	/**
+	 * Initializes file for output.
+	 * Does nothing if no output filename was specified.
+	 */
 	void initIO();
 
+	/**
+	 * Initializes memory to store data for each tile (resizes vectors).
+	 */
 	void initMemory();
 
+	/**
+	 * Computes information about the tile for every process.
+	 * Computes start and end index (ignores border of the matrix and halo zones).
+	 * Computes information about neighbours, whether they exist and their indexes.
+	 */
 	void initTileInfo();
 
+	/**
+	 * Initializes MPI datatypes.
+	 */
 	void initTypes();
 
+	/**
+	 * Initializes windows for RMA.
+	 * Does nothing if not in RMA mode.
+	 */
 	void initRMA();
 
+	/**
+	 * Creates another communicator for computation of average temperature in middle column.
+	 * Computes indexes of tiles containing the middle column and index of the column itself
+	 */
 	void initMiddleColumnInfo();
 
+	/**
+	 * Scatters the tiles (without) border to other processes from root.
+	 */
 	void initScatterTiles();
 
+	/**
+	 * Processes exchange halo zones of all their data arrays with their neighbours (using two-sided communication).
+	 */
 	void initBorderExchange();
 
+	/**
+	 * Sums the values in the middle column and send resulting value to root, which computes the average temperature.
+	 */
 	void computeMiddleColAvgTemp(const float* const data);
 
+	/**
+	 * Sends all tiles to root.
+	 */
 	void sendMatrixToRoot(float* sendbuf, float* recvbuf);
 
+	/**
+	 * Stores values in a tile for the given iteration to a file using parallel IO.
+	 */
 	void storeDataIntoFileParallel(const size_t iteration, const float* data);
 };
 
